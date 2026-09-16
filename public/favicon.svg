@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="redGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ef4444" />
+      <stop offset="100%" stop-color="#b91c1c" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.3" />
+    </filter>
+  </defs>
+  <!-- Red Rounded Background -->
+  <rect width="512" height="512" rx="120" fill="url(#redGrad)" />
+  <!-- White Character '海' -->
+  <text
+    x="50%"
+    y="53%"
+    dominant-baseline="central"
+    text-anchor="middle"
+    font-size="330"
+    font-weight="900"
+    font-family="system-ui, -apple-system, 'Noto Sans JP', 'Hiragino Sans', 'BIZ UDPGothic', sans-serif"
+    fill="#ffffff"
+    filter="url(#shadow)"
+  >海</text>
+</svg>

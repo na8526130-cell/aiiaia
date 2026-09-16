@@ -1,0 +1,8 @@
+{
+  "name": "Remix 海斗tube",
+  "description": "YouTube Data APIを活用した多機能動画クライアント「海斗tube」。急上昇・検索・チャンネル・コメント・Education埋め込み再生対応。",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
