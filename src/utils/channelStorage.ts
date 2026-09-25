@@ -1,3 +1,5 @@
+import { convertImageToBase64DataUri, saveChannelAvatarToIndexedDB } from './offlineStorage';
+
 // Helper utilities for Subscriptions and Blocked Channels in LocalStorage
 
 export interface BlockedChannel {
@@ -16,6 +18,8 @@ export interface SubscribedChannel {
   videoCount?: string;
   description?: string;
   subscribedAt: string;
+  isArtist?: boolean;
+  isVerified?: boolean;
 }
 
 const BLOCKED_KEY = 'kaito_blocked_channels';
@@ -90,6 +94,19 @@ export function subscribeChannel(channel: SubscribedChannel): SubscribedChannel[
   try {
     localStorage.setItem(SUBS_KEY, JSON.stringify(updated));
     window.dispatchEvent(new Event('kaito_channel_subs_changed'));
+
+    // Asynchronously convert avatar image to Data URI Base64 and update local storage & IndexedDB
+    if (channel.avatarUrl && !channel.avatarUrl.startsWith('data:image/')) {
+      convertImageToBase64DataUri(channel.avatarUrl).then((base64Url) => {
+        if (base64Url && base64Url.startsWith('data:image/')) {
+          saveChannelAvatarToIndexedDB(channel.channelId, base64Url);
+          const fresh = getSubscribedChannels().map((c) =>
+            c.channelId === channel.channelId ? { ...c, avatarUrl: base64Url } : c
+          );
+          localStorage.setItem(SUBS_KEY, JSON.stringify(fresh));
+        }
+      });
+    }
   } catch (e) {
     console.error(e);
   }

@@ -10,6 +10,9 @@ import { ShortsView } from './components/ShortsView';
 import { ChannelsView } from './components/ChannelsView';
 import { SettingsModal } from './components/SettingsModal';
 import { ShortcutsHelpModal } from './components/ShortcutsHelpModal';
+import { MinecraftVisitorCounter } from './components/MinecraftVisitorCounter';
+import { MathDisguiseView } from './components/MathDisguiseView';
+import { MiniFloatingPlayer } from './components/MiniFloatingPlayer';
 import {
   YouTubeVideoItem,
   YouTubeCategoryItem,
@@ -18,19 +21,38 @@ import {
   UserCustomPlaylist,
   ApiSettings
 } from './types';
-import { isShortVideo } from './utils/formatters';
+import { isShortVideo, parseYouTubeUrl } from './utils/formatters';
 import { isChannelBlocked } from './utils/channelStorage';
 import { getApiSettings, saveApiSettings, customFetch, setEmergencyYoutubeV3 } from './utils/apiClient';
+import { initThemeListener } from './utils/themeManager';
 import { Flame, Play, ShieldCheck, AlertCircle, Zap, Settings, Users, ChevronDown, RefreshCw } from 'lucide-react';
 
 export default function App() {
+  // Disguise & Gate State - Always lock on refresh as requested ("更新したら数学の画面なる")
+  const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
+  const [disguiseTick, setDisguiseTick] = useState(0);
+
+  useEffect(() => {
+    const handleDisguiseChange = () => setDisguiseTick((t) => t + 1);
+    window.addEventListener('kaito_disguise_changed', handleDisguiseChange);
+    return () => window.removeEventListener('kaito_disguise_changed', handleDisguiseChange);
+  }, []);
+
+  // Theme auto-listener (OS prefers-color-scheme & cross-tab sync)
+  useEffect(() => {
+    const cleanup = initThemeListener();
+    return cleanup;
+  }, []);
+
   // Navigation & View States
   const [activeTab, setActiveTab] = useState<string>('home');
   const [selectedVideo, setSelectedVideo] = useState<YouTubeVideoItem | null>(null);
+  const [isDetailOpen, setIsDetailOpen] = useState<boolean>(false);
   const [initialShortVideo, setInitialShortVideo] = useState<YouTubeVideoItem | null>(null);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
 
-  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>('stream-normal');
+  // Default to YouTube Education embedded player
+  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>('education');
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
@@ -38,6 +60,77 @@ export default function App() {
   // API Settings State & Emergency v3 availability
   const [apiSettings, setApiSettings] = useState<ApiSettings>(() => getApiSettings());
   const [emergencyV3Available, setEmergencyV3Available] = useState<boolean>(false);
+
+  // History Guard (ヒストリーガード): 戻るボタンが押された際にYouTube履歴ではなく即座に偽装数学画面に直行させる
+  useEffect(() => {
+    if (isUnlocked) {
+      try {
+        // クリーンなURL状態を維持
+        window.history.pushState({ kaitoDisguiseGuard: true }, '', window.location.pathname);
+      } catch {}
+
+      const handlePopState = () => {
+        // ブラウザの戻るボタンが押されたら即座に偽装画面（ロック）へ直行！
+        setIsUnlocked(false);
+        setIsDetailOpen(false);
+      };
+
+      window.addEventListener('popstate', handlePopState);
+      return () => window.removeEventListener('popstate', handlePopState);
+    }
+  }, [isUnlocked]);
+
+  // Synchronize Tab Title and Favicon based on Disguise / Unlock State
+  useEffect(() => {
+    const updateFavicon = (iconUrl: string) => {
+      let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement | null;
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = 'icon';
+        document.head.appendChild(link);
+      }
+      link.href = iconUrl;
+    };
+
+    if (!isUnlocked) {
+      // 偽装プリセットの反映
+      try {
+        const storedPreset = localStorage.getItem('kaito_disguise_preset');
+        if (storedPreset === 'classroom') {
+          document.title = 'ホーム - Google Classroom';
+          updateFavicon('https://ssl.gstatic.com/classroom/favicon.png');
+          return;
+        } else if (storedPreset === 'docs') {
+          document.title = '無題のドキュメント - Google ドキュメント';
+          updateFavicon('https://ssl.gstatic.com/docs/documents/images/kix-favicon7.ico');
+          return;
+        } else if (storedPreset === 'nhk') {
+          document.title = 'NHK for School - 学校放送学習ポータル';
+          updateFavicon('https://www.nhk.or.jp/favicon.ico');
+          return;
+        } else if (storedPreset === 'wikipedia') {
+          document.title = '二次方程式 - Wikipedia';
+          updateFavicon('https://en.wikipedia.org/static/favicon/wikipedia.ico');
+          return;
+        }
+      } catch {}
+      document.title = '数理アカデミー 学習ポータル';
+      updateFavicon('https://ssl.gstatic.com/classroom/favicon.png');
+    } else {
+      // Check if user has an active Stealth Cloak configured
+      try {
+        const cloakRaw = localStorage.getItem('kaito_stealth_cloak');
+        if (cloakRaw) {
+          const cloak = JSON.parse(cloakRaw);
+          if (cloak.title) document.title = cloak.title;
+          if (cloak.favicon) updateFavicon(cloak.favicon);
+          return;
+        }
+      } catch {}
+      document.title = '海斗tube';
+      updateFavicon('/favicon.svg');
+    }
+  }, [isUnlocked, disguiseTick]);
 
   // Search Filters
   const [filters, setFilters] = useState<SearchFilters>({
@@ -134,6 +227,64 @@ export default function App() {
       window.removeEventListener('kaito_emergency_v3_available', handleEmergency);
       window.removeEventListener('kaito_settings_changed', handleSettingsChanged);
     };
+  }, []);
+
+  // Cross-Tab Synchronization via window.addEventListener("storage", ...)
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (!e.key) return;
+
+      // 1. Channel Subscriptions
+      if (e.key === 'kaito_subscribed_channels') {
+        window.dispatchEvent(new CustomEvent('kaito_channel_subs_changed'));
+      }
+
+      // 2. Channel Blocks
+      if (e.key === 'kaito_blocked_channels') {
+        setBlockedTick((t) => t + 1);
+        window.dispatchEvent(new CustomEvent('kaito_channel_blocked_changed'));
+      }
+
+      // 3. Saved Videos (Library)
+      if (e.key === 'kaito_saved_videos') {
+        try {
+          setSavedVideos(e.newValue ? JSON.parse(e.newValue) : []);
+        } catch {}
+      }
+
+      // 4. Watch History
+      if (e.key === 'kaito_watch_history') {
+        try {
+          setWatchHistory(e.newValue ? JSON.parse(e.newValue) : []);
+        } catch {}
+      }
+
+      // 5. Custom Playlists
+      if (e.key === 'kaito_custom_playlists') {
+        try {
+          setCustomPlaylists(e.newValue ? JSON.parse(e.newValue) : []);
+        } catch {}
+      }
+
+      // 6. Settings / API Config
+      if (e.key === 'kaito_api_settings_v1') {
+        try {
+          if (e.newValue) {
+            const parsed = JSON.parse(e.newValue);
+            setApiSettings(parsed);
+          }
+        } catch {}
+      }
+
+      // 7. Disguise & Stealth Settings
+      if (e.key === 'kaito_disguise_preset' || e.key === 'kaito_stealth_cloak') {
+        // Trigger re-evaluation of title/favicon
+        window.dispatchEvent(new CustomEvent('kaito_disguise_changed'));
+      }
+    };
+
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
   }, []);
 
   const handleActivateEmergencyV3 = () => {
@@ -278,8 +429,10 @@ export default function App() {
       setInitialShortVideo(video);
       setActiveTab('shorts');
       setSelectedVideo(null);
+      setIsDetailOpen(false);
     } else {
       setSelectedVideo(video);
+      setIsDetailOpen(true);
     }
 
     const targetId = typeof video.id === 'string' ? video.id : (video.id as any)?.videoId;
@@ -385,10 +538,82 @@ export default function App() {
     }
   };
 
-  const handleSearchSubmit = (query: string) => {
-    setFilters((prev) => ({ ...prev, query }));
+  const handleSearchSubmit = async (query: string) => {
+    const trimmed = query.trim();
+    if (!trimmed) return;
+
+    // Check if the input is a YouTube URL (shorts, watch, youtu.be, embed, etc.)
+    const parsed = parseYouTubeUrl(trimmed);
+    if (parsed.videoId) {
+      // If it contains "shorts" or /shorts/<id>, automatically route to Shorts view
+      if (parsed.isShort || trimmed.toLowerCase().includes('short')) {
+        const tempShortVideo: YouTubeVideoItem = {
+          id: parsed.videoId,
+          snippet: {
+            title: 'YouTube Short',
+            description: '#shorts',
+            publishedAt: new Date().toISOString(),
+            channelId: '',
+            channelTitle: 'YouTube',
+            thumbnails: {
+              high: { url: `https://i.ytimg.com/vi/${parsed.videoId}/hqdefault.jpg` },
+              medium: { url: `https://i.ytimg.com/vi/${parsed.videoId}/mqdefault.jpg` },
+              default: { url: `https://i.ytimg.com/vi/${parsed.videoId}/default.jpg` }
+            }
+          }
+        };
+
+        // Try to fetch real video metadata asynchronously in background
+        customFetch(`/api/youtube/video/${parsed.videoId}`)
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.items && data.items[0]) {
+              setInitialShortVideo(data.items[0]);
+            }
+          })
+          .catch(() => {});
+
+        setInitialShortVideo(tempShortVideo);
+        setActiveTab('shorts');
+        setSelectedVideo(null);
+        setIsDetailOpen(false);
+        return;
+      }
+
+      // If it is a normal YouTube video URL, open the video directly in detail / player view
+      const tempVideo: YouTubeVideoItem = {
+        id: parsed.videoId,
+        snippet: {
+          title: 'YouTube Video',
+          description: '',
+          publishedAt: new Date().toISOString(),
+          channelId: '',
+          channelTitle: 'YouTube',
+          thumbnails: {
+            high: { url: `https://i.ytimg.com/vi/${parsed.videoId}/hqdefault.jpg` },
+            medium: { url: `https://i.ytimg.com/vi/${parsed.videoId}/mqdefault.jpg` },
+            default: { url: `https://i.ytimg.com/vi/${parsed.videoId}/default.jpg` }
+          }
+        }
+      };
+
+      handleSelectVideo(tempVideo);
+
+      // Async fetch complete video metadata
+      customFetch(`/api/youtube/video/${parsed.videoId}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.items && data.items[0]) {
+            handleSelectVideo(data.items[0]);
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+
+    setFilters((prev) => ({ ...prev, query: trimmed }));
     setActiveTab('home');
-    setSelectedVideo(null);
+    setIsDetailOpen(false); // 検索中も動画は小窓・バックグラウンドで自動再生を維持
   };
 
   const handleUpdateFilters = (newFilters: Partial<SearchFilters>) => {
@@ -406,6 +631,26 @@ export default function App() {
     });
   };
 
+  const handleUnlockMath = () => {
+    setIsUnlocked(true);
+    try {
+      sessionStorage.setItem('kaito_math_unlocked', 'true');
+    } catch {}
+  };
+
+  const handleLockDisguise = () => {
+    setIsUnlocked(false);
+    try {
+      sessionStorage.removeItem('kaito_math_unlocked');
+    } catch {}
+    setSelectedVideo(null);
+  };
+
+  // If not unlocked, render the Quadratic Equation Educational Disguise Page
+  if (!isUnlocked) {
+    return <MathDisguiseView onUnlock={handleUnlockMath} />;
+  }
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans selection:bg-rose-600 selection:text-white app-loaded">
       {/* Top Main Navigation Header */}
@@ -419,7 +664,7 @@ export default function App() {
         activeTab={activeTab}
         onChangeTab={(tab) => {
           setActiveTab(tab);
-          setSelectedVideo(null);
+          setIsDetailOpen(false); // タブ移動時も動画はバックグラウンド再生を維持
         }}
         playbackMode={playbackMode}
         onTogglePlaybackMode={setPlaybackMode}
@@ -428,12 +673,13 @@ export default function App() {
         emergencyV3Available={emergencyV3Available}
         onActivateEmergencyV3={handleActivateEmergencyV3}
         onDeactivateEmergencyV3={handleDeactivateEmergencyV3}
+        onLockDisguise={handleLockDisguise}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 pb-16">
         {/* Render Selected Video Detail View if open */}
-        {selectedVideo ? (
+        {selectedVideo && isDetailOpen ? (
           <VideoDetailView
             video={selectedVideo}
             relatedVideos={relatedVideos}
@@ -443,7 +689,7 @@ export default function App() {
             onTogglePlaybackMode={setPlaybackMode}
             isSaved={isVideoSaved(selectedVideo)}
             onToggleSave={handleToggleSave}
-            onBackToHome={() => setSelectedVideo(null)}
+            onBackToHome={() => setIsDetailOpen(false)}
             onOpenShortsPlayer={(v) => handleSelectVideo(v)}
           />
         ) : activeTab === 'shorts' ? (
@@ -457,7 +703,10 @@ export default function App() {
             onBackToHome={() => setActiveTab('home')}
           />
         ) : activeTab === 'channels' ? (
-          <ChannelsView onSelectChannel={setSelectedChannelId} />
+          <ChannelsView
+            onSelectChannel={setSelectedChannelId}
+            onSelectVideo={handleSelectVideo}
+          />
         ) : activeTab === 'categories' ? (
           <CategoryView
             categories={categories}
@@ -591,6 +840,19 @@ export default function App() {
         )}
       </main>
 
+      {/* Mini Floating Player for Background Continuous Playback (他の検索や操作中も次の動画が流れるまで自動バックグラウンド再生) */}
+      {selectedVideo && !isDetailOpen && activeTab !== 'shorts' && (
+        <MiniFloatingPlayer
+          video={selectedVideo}
+          playbackMode={playbackMode}
+          onOpenDetail={() => setIsDetailOpen(true)}
+          onClose={() => {
+            setSelectedVideo(null);
+            setIsDetailOpen(false);
+          }}
+        />
+      )}
+
       {/* Footer */}
       <footer className="border-t border-neutral-800 bg-neutral-900 py-6 text-center text-xs text-neutral-400 space-y-3">
         <div className="flex items-center justify-center gap-4 flex-wrap text-neutral-400 text-xs">
@@ -607,6 +869,11 @@ export default function App() {
           >
             API設定
           </button>
+        </div>
+
+        {/* Minecraft-Themed Visitor Counter */}
+        <div className="flex items-center justify-center pt-1">
+          <MinecraftVisitorCounter />
         </div>
 
         <p className="font-semibold text-neutral-300">
@@ -642,6 +909,7 @@ export default function App() {
         onClose={() => setIsSettingsModalOpen(false)}
         settings={apiSettings}
         onSaveSettings={handleSaveSettings}
+        onOpenProxyGuide={() => window.dispatchEvent(new CustomEvent('kaito_open_proxy_guide'))}
       />
 
       {/* Keyboard Shortcuts Help Modal */}

@@ -4,6 +4,10 @@ import {
   fetchImageAsBase64,
   isBase64ThumbnailsEnabled
 } from '../utils/thumbnail';
+import {
+  getThumbnailFromIndexedDB,
+  cacheThumbnailFromUrl
+} from '../utils/indexedDbThumbnailStorage';
 
 type ThumbnailQuality = 'high' | 'medium' | 'default';
 
@@ -66,32 +70,59 @@ export const ThumbnailImage: React.FC<ThumbnailImageProps> = ({
     let isMounted = true;
     if (!rawUrl) return;
 
-    if (useBase64 && !rawUrl.startsWith('data:')) {
-      fetchImageAsBase64(rawUrl).then((b64) => {
-        if (isMounted && b64) {
-          setSrc(b64);
-        }
-      });
-    } else {
-      setSrc(rawUrl);
-    }
+    // Check IndexedDB cache first for offline capability
+    getThumbnailFromIndexedDB(rawUrl).then((cachedBlob) => {
+      if (isMounted && cachedBlob) {
+        setSrc(cachedBlob);
+        return;
+      }
+
+      if (useBase64 && !rawUrl.startsWith('data:')) {
+        fetchImageAsBase64(rawUrl).then((b64) => {
+          if (isMounted && b64) {
+            setSrc(b64);
+          }
+        });
+      } else {
+        setSrc(rawUrl);
+      }
+
+      // Asynchronously store binary ArrayBuffer into IndexedDB for offline access
+      cacheThumbnailFromUrl(rawUrl, effectiveVideoId);
+    });
 
     return () => {
       isMounted = false;
     };
-  }, [rawUrl, useBase64, settingsVersion]);
+  }, [rawUrl, useBase64, settingsVersion, effectiveVideoId]);
 
   const handleError = () => {
     if (!hasError) {
       setHasError(true);
       // Fallback strategies:
-      // 1. If Invidious URL failed, try another quality or YouTube fallback
-      if (effectiveVideoId && !src.includes('i.ytimg.com')) {
-        setSrc(`https://i.ytimg.com/vi/${effectiveVideoId}/hqdefault.jpg`);
-      } else if (fallbackUrl && src !== fallbackUrl) {
+      // 0. Check if IndexedDB has cached version under videoId
+      if (effectiveVideoId) {
+        getThumbnailFromIndexedDB(effectiveVideoId).then((blobUrl) => {
+          if (blobUrl) {
+            setSrc(blobUrl);
+            return;
+          }
+          // 1. If Invidious URL failed, try YouTube fallback
+          if (!src.includes('i.ytimg.com')) {
+            setSrc(`https://i.ytimg.com/vi/${effectiveVideoId}/hqdefault.jpg`);
+          } else if (fallbackUrl && src !== fallbackUrl) {
+            setSrc(fallbackUrl);
+          } else {
+            // Generic YouTube placeholder
+            setSrc('https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=800&auto=format&fit=crop&q=80');
+          }
+        });
+        return;
+      }
+
+      if (fallbackUrl && src !== fallbackUrl) {
         setSrc(fallbackUrl);
       } else {
-        // Generic YouTube placeholder
         setSrc('https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=800&auto=format&fit=crop&q=80');
       }
     }

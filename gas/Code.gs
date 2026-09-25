@@ -10,7 +10,12 @@
 // ==========================================
 
 function doGet(e) {
-  // REST APIとしてのアクセス（?api=/api/youtube/trending 等）
+  // 1. プロキシ中継リクエスト (?url=https://...)
+  if (e && e.parameter && e.parameter.url) {
+    return handleProxy(e);
+  }
+
+  // 2. REST APIとしてのアクセス（?api=/api/youtube/trending 等）
   if (e && e.parameter && e.parameter.api) {
     var apiPath = e.parameter.api;
     var res = handleGasApiRequest(apiPath, 'GET', {}, null);
@@ -18,7 +23,7 @@ function doGet(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  // HTML Web App を描画（'index' または 'index.html' の両方に対応）
+  // 3. HTML Web App を描画（'index' または 'index.html' の両方に対応）
   var htmlOutput;
   try {
     htmlOutput = HtmlService.createHtmlOutputFromFile('index');
@@ -38,7 +43,7 @@ function doGet(e) {
 
   htmlOutput.setTitle('海斗tube')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no');
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=5');
 
   return htmlOutput;
 }
@@ -167,6 +172,60 @@ function handleGasApiRequest(urlStr, method, headers, bodyStr) {
     // 13. YouTube Education 動的パラメータ
     if (path === '/api/education-param') {
       return { status: 200, data: handleEducationParam() };
+    }
+
+    // 14. プレミア会員認証 (スクリプトプロパティ検証)
+    if (path === '/api/auth/verify') {
+      return { status: 200, data: handleAuthVerify(body) };
+    }
+
+    // 15. 再生リスト詳細 (/api/youtube/playlist/:id)
+    if (path.indexOf('/api/youtube/playlist/') === 0) {
+      var plId = path.replace('/api/youtube/playlist/', '');
+      return { status: 200, data: handlePlaylistDetail(config, plId) };
+    }
+
+    // 16. チャンネル再生リスト一覧 (/api/youtube/channel/playlists/:id)
+    if (path.indexOf('/api/youtube/channel/playlists/') === 0) {
+      var chPlId = path.replace('/api/youtube/channel/playlists/', '');
+      return { status: 200, data: handleChannelPlaylists(config, chPlId) };
+    }
+
+    // 17. ストリームソース取得 (/api/youtube/stream-sources/:id)
+    if (path.indexOf('/api/youtube/stream-sources/') === 0) {
+      var strVideoId = path.replace('/api/youtube/stream-sources/', '');
+      return { status: 200, data: handleStreamSources(config, strVideoId) };
+    }
+
+    // 18. 字幕・文字起こし取得 (/api/youtube/transcript/:id)
+    if (path.indexOf('/api/youtube/transcript/') === 0) {
+      var transVideoId = path.replace('/api/youtube/transcript/', '');
+      var reqLang = (query && query.lang) || 'ja';
+      return { status: 200, data: handleTranscript(config, transVideoId, reqLang) };
+    }
+
+    // 19. YouTube Education ストリームURL生成 (/api/stream/youtubeeducation/:id)
+    if (path.indexOf('/api/stream/youtubeeducation/') === 0) {
+      var eduVid = path.replace('/api/stream/youtubeeducation/', '');
+      return { status: 200, data: handleStreamYoutubeEducation(eduVid, query) };
+    }
+
+    // 20. ストリームサーバー状態 (/api/stream/status)
+    if (path === '/api/stream/status') {
+      return {
+        status: 200,
+        data: {
+          status: 'ok',
+          uptime: 999999,
+          timestamp: new Date().toISOString(),
+          provider: 'Google Apps Script (GAS) Serverless',
+          features: {
+            youtubeEducation: true,
+            invidiousProxy: true,
+            htmlService: true
+          }
+        }
+      };
     }
 
     return { status: 404, data: { error: 'Endpoint not found: ' + path } };
@@ -583,6 +642,25 @@ function handleRelatedVideos(config, id, query) {
     }
   }
 
+  // 3. Fallback: Search by video title
+  try {
+    var vidDetail = handleVideoDetail(config, id);
+    var title = vidDetail && vidDetail.items && vidDetail.items[0] && vidDetail.items[0].snippet && vidDetail.items[0].snippet.title;
+    if (title) {
+      var cleanTitle = title.replace(/[【】\[\]()（）]/g, ' ').slice(0, 30).trim();
+      var searchRes = handleSearch(config, { q: cleanTitle, maxResults: maxResults });
+      if (searchRes && searchRes.items && searchRes.items.length > 0) {
+        var filtered = searchRes.items.filter(function(v) {
+          var vId = (v.id && v.id.videoId) || (typeof v.id === 'string' ? v.id : '');
+          return vId && vId !== id;
+        });
+        if (filtered.length > 0) {
+          return { kind: 'youtube#searchResponse', items: filtered };
+        }
+      }
+    }
+  } catch (e) {}
+
   return { items: [] };
 }
 
@@ -920,29 +998,60 @@ function handleTestKey(headers, body) {
 
 function handleEducationParam() {
   var cache = CacheService.getScriptCache();
-  var cached = cache.get('edu_param');
-  if (cached) {
-    return { success: true, param: cached };
+  var cachedParam = cache.get('edu_param');
+  var cachedApi = cache.get('edu_widget_api');
+  if (cachedParam) {
+    return {
+      success: true,
+      param: cachedParam,
+      widgetApiSource: cachedApi || '',
+      hasWidgetApi: Boolean(cachedApi && cachedApi.length > 100)
+    };
   }
 
   try {
-    var sheetUrl = 'https://docs.google.com/spreadsheets/d/1dily2wiik92TAyK3zyIsu8TDuyYNoF20IM1iMk_X-pg/gviz/tq?tqx=out:json&sheet=Youtube-education-parameter&range=A1';
+    var sheetUrl = 'https://docs.google.com/spreadsheets/d/1dily2wiik92TAyK3zyIsu8TDuyYNoF20IM1iMk_X-pg/gviz/tq?tqx=out:json&sheet=Youtube-education-parameter&range=A1:A2&headers=0';
     var res = UrlFetchApp.fetch(sheetUrl, { muteHttpExceptions: true });
     var text = res.getContentText();
     var match = text.match(/google\.visualization\.Query\.setResponse\((.*)\);/);
     if (match && match[1]) {
       var json = JSON.parse(match[1]);
-      var paramVal = json && json.table && json.table.rows && json.table.rows[0] && json.table.rows[0].c && json.table.rows[0].c[0] && json.table.rows[0].c[0].v;
-      if (paramVal) {
-        cache.put('edu_param', paramVal, 1800); // 30分キャッシュ
-        return { success: true, param: paramVal };
+      var rows = (json && json.table && json.table.rows) || [];
+      var paramVal = rows[0] && rows[0].c && rows[0].c[0] && rows[0].c[0].v;
+      var widgetApiVal = rows[1] && rows[1].c && rows[1].c[0] && rows[1].c[0].v;
+
+      var paramStr = paramVal ? String(paramVal).replace(/&amp;/g, '&').trim() : '';
+      if (paramStr && paramStr.indexOf('?') !== 0) {
+        paramStr = '?' + paramStr;
+      }
+      var widgetApiStr = widgetApiVal ? String(widgetApiVal) : '';
+
+      if (paramStr) {
+        try {
+          cache.put('edu_param', paramStr, 3600); // 1時間キャッシュ
+          if (widgetApiStr && widgetApiStr.length < 90000) {
+            cache.put('edu_widget_api', widgetApiStr, 3600);
+          }
+        } catch (cacheErr) {}
+        return {
+          success: true,
+          param: paramStr,
+          widgetApiSource: widgetApiStr,
+          hasWidgetApi: Boolean(widgetApiStr && widgetApiStr.length > 100)
+        };
       }
     }
   } catch (e) {
     Logger.log('Edu param sheet fetch failed: ' + e.toString());
   }
 
-  return { success: false, param: '' };
+  var fallbackParam = '?enablejsapi=1&rel=0&control=1&showinfo=0&start=0&autoplay=0&cc_load_policy=0&errorlinks=1&hl=ja&authuser=0&modestbranding=1';
+  return {
+    success: false,
+    param: fallbackParam,
+    widgetApiSource: '',
+    hasWidgetApi: false
+  };
 }
 
 /**
@@ -969,3 +1078,352 @@ function fetchAsBase64(imageUrl) {
     return null;
   }
 }
+
+/**
+ * 14. プレミア会員認証ハンドラー
+ * GASのスクリプトプロパティ (PREMIUM_PASSWORD, PREMIUM_ID) から
+ * パスワード・IDを取得して照合・検証します。
+ * スクリプトプロパティ未設定時はデフォルト値 (ID: kaito, PW: @0726kaito) で安全に動作します。
+ */
+function handleAuthVerify(body) {
+  try {
+    var props = PropertiesService.getScriptProperties().getProperties();
+    var expectedId = (props.PREMIUM_ID || props.KAITO_ID || 'kaito').trim();
+    var expectedPassword = (props.PREMIUM_PASSWORD || props.KAITO_PASSWORD || '@0726kaito').trim();
+
+    var inputId = ((body && (body.username || body.id)) || '').trim();
+    var inputPassword = ((body && body.password) || '').trim();
+
+    if (inputId === expectedId && inputPassword === expectedPassword) {
+      return { success: true };
+    }
+
+    return {
+      success: false,
+      message: '会員IDまたはパスワードが一致しません。正しい認証情報を入力してください。'
+    };
+  } catch (err) {
+    Logger.log('handleAuthVerify error: ' + err.toString());
+    return {
+      success: false,
+      message: '認証処理中にエラーが発生しました: ' + (err.message || err.toString())
+    };
+  }
+}
+
+/**
+ * 15. 再生リスト詳細取得ハンドラー (/api/youtube/playlist/:id)
+ */
+function handlePlaylistDetail(config, id) {
+  // 1. Invidious playlists/:id
+  try {
+    var invRes = fetchInvidious(config.invidiousUrl, 'playlists/' + id);
+    if (invRes.data && Array.isArray(invRes.data.videos)) {
+      var items = invRes.data.videos.map(convertInvidiousItemToYouTubeItem);
+      return {
+        playlist: {
+          id: id,
+          snippet: {
+            title: invRes.data.title || '再生リスト',
+            description: invRes.data.description || '',
+            channelTitle: invRes.data.author || ''
+          }
+        },
+        items: items,
+        nextPageToken: null
+      };
+    }
+  } catch (e) {
+    Logger.log('handlePlaylistDetail invidious error: ' + e.toString());
+  }
+
+  // 2. YouTube Data API fallback
+  if (config.youtubeKey) {
+    try {
+      var plRes = fetchYouTube('playlists', { part: 'snippet', id: id }, config.youtubeKey);
+      var itemsRes = fetchYouTube('playlistItems', { part: 'snippet,contentDetails', playlistId: id, maxResults: '50' }, config.youtubeKey);
+      if (itemsRes.items) {
+        return {
+          playlist: plRes.items ? plRes.items[0] : null,
+          items: itemsRes.items.map(function(item) {
+            return {
+              id: item.snippet ? item.snippet.resourceId.videoId : item.contentDetails.videoId,
+              snippet: item.snippet
+            };
+          }),
+          nextPageToken: itemsRes.nextPageToken || null
+        };
+      }
+    } catch (e) {
+      Logger.log('handlePlaylistDetail youtube error: ' + e.toString());
+    }
+  }
+
+  return {
+    playlist: null,
+    items: [],
+    nextPageToken: null,
+    error: 'PLAYLIST_NOT_FOUND',
+    message: '再生リストの取得に失敗しました。'
+  };
+}
+
+/**
+ * 16. チャンネル再生リスト一覧取得ハンドラー (/api/youtube/channel/playlists/:id)
+ */
+function handleChannelPlaylists(config, channelId) {
+  try {
+    var invRes = fetchInvidious(config.invidiousUrl, 'channels/playlists/' + channelId);
+    if (invRes.data && Array.isArray(invRes.data.playlists)) {
+      var items = invRes.data.playlists.map(function(pl) {
+        return {
+          id: pl.playlistId || pl.id,
+          snippet: {
+            title: pl.title || '再生リスト',
+            description: pl.description || '',
+            channelTitle: pl.author || '',
+            channelId: channelId,
+            publishedAt: '',
+            thumbnails: {
+              medium: { url: pl.playlistThumbnail || '' },
+              high: { url: pl.playlistThumbnail || '' }
+            }
+          },
+          contentDetails: {
+            itemCount: pl.videoCount || 0
+          }
+        };
+      });
+      return { items: items, nextPageToken: null };
+    }
+  } catch (e) {
+    Logger.log('handleChannelPlaylists invidious error: ' + e.toString());
+  }
+
+  if (config.youtubeKey) {
+    try {
+      var res = fetchYouTube('playlists', { part: 'snippet,contentDetails', channelId: channelId, maxResults: '25' }, config.youtubeKey);
+      return res.items ? res : { items: [], nextPageToken: null };
+    } catch (e) {}
+  }
+
+  return { items: [], nextPageToken: null };
+}
+
+/**
+ * 17. ストリームソース取得ハンドラー (/api/youtube/stream-sources/:id)
+ */
+function handleStreamSources(config, videoId) {
+  var cleanInst = (config.invidiousUrl || 'https://yt.omada.cafe').replace(/\/+$/, '');
+  try {
+    var invRes = fetchInvidious(config.invidiousUrl, 'videos/' + videoId);
+    if (invRes.data) {
+      var formats = Array.isArray(invRes.data.formatStreams) ? invRes.data.formatStreams : [];
+      var adaptive = Array.isArray(invRes.data.adaptiveFormats) ? invRes.data.adaptiveFormats : [];
+      var v720 = formats.find(function(f) { return f.resolution === '720p' || f.qualityLabel === '720p'; });
+      var v360 = formats.find(function(f) { return f.resolution === '360p' || f.qualityLabel === '360p'; }) || formats[0];
+      var audio = adaptive.find(function(f) { return (f.type || '').indexOf('audio') !== -1; });
+
+      return {
+        videoId: videoId,
+        streams: {
+          v720: (v720 && v720.url) || (cleanInst + '/latest_version?id=' + videoId + '&itag=22'),
+          v360: (v360 && v360.url) || (cleanInst + '/latest_version?id=' + videoId + '&itag=18'),
+          audio: (audio && audio.url) || (cleanInst + '/latest_version?id=' + videoId + '&itag=140'),
+          invidious720: cleanInst + '/latest_version?id=' + videoId + '&itag=22',
+          invidious360: cleanInst + '/latest_version?id=' + videoId + '&itag=18'
+        }
+      };
+    }
+  } catch (e) {
+    Logger.log('handleStreamSources error: ' + e.toString());
+  }
+
+  return {
+    videoId: videoId,
+    streams: {
+      v720: cleanInst + '/latest_version?id=' + videoId + '&itag=22',
+      v360: cleanInst + '/latest_version?id=' + videoId + '&itag=18',
+      invidious720: cleanInst + '/latest_version?id=' + videoId + '&itag=22',
+      invidious360: cleanInst + '/latest_version?id=' + videoId + '&itag=18'
+    }
+  };
+}
+
+/**
+ * 18. 字幕・文字起こし取得ハンドラー (/api/youtube/transcript/:id)
+ */
+function handleTranscript(config, videoId, lang) {
+  lang = lang || 'ja';
+  try {
+    var invRes = fetchInvidious(config.invidiousUrl, 'captions/' + videoId);
+    if (invRes.data && Array.isArray(invRes.data.captions) && invRes.data.captions.length > 0) {
+      var caps = invRes.data.captions;
+      var targetCap = null;
+      for (var i = 0; i < caps.length; i++) {
+        if (caps[i].languageCode === lang) { targetCap = caps[i]; break; }
+      }
+      if (!targetCap) targetCap = caps[0];
+
+      if (targetCap && targetCap.url) {
+        var cleanInst = (config.invidiousUrl || 'https://yt.omada.cafe').replace(/\/+$/, '');
+        var vttUrl = targetCap.url.indexOf('http') === 0 ? targetCap.url : cleanInst + targetCap.url;
+        var res = UrlFetchApp.fetch(vttUrl, { muteHttpExceptions: true });
+        if (res.getResponseCode() === 200) {
+          var text = res.getContentText();
+          var lines = text.split('\n');
+          var items = [];
+          var currentStart = 0;
+          var currentDuration = 0;
+          var currentText = '';
+
+          for (var j = 0; j < lines.length; j++) {
+            var line = lines[j].trim();
+            if (line.indexOf('-->') !== -1) {
+              if (currentText) {
+                items.push({ start: currentStart, duration: currentDuration, text: currentText.replace(/<[^>]+>/g, '').trim() });
+                currentText = '';
+              }
+              var times = line.split('-->');
+              var sParts = times[0].trim().split(':');
+              if (sParts.length === 3) currentStart = parseFloat(sParts[0])*3600 + parseFloat(sParts[1])*60 + parseFloat(sParts[2]);
+              else if (sParts.length === 2) currentStart = parseFloat(sParts[0])*60 + parseFloat(sParts[1]);
+              var eParts = times[1].trim().split(' ')[0].split(':');
+              var endSec = 0;
+              if (eParts.length === 3) endSec = parseFloat(eParts[0])*3600 + parseFloat(eParts[1])*60 + parseFloat(eParts[2]);
+              else if (eParts.length === 2) endSec = parseFloat(eParts[0])*60 + parseFloat(eParts[1]);
+              currentDuration = Math.max(1, endSec - currentStart);
+            } else if (line && line.indexOf('WEBVTT') !== 0 && line.indexOf('NOTE') !== 0 && !/^\d+$/.test(line)) {
+              currentText = currentText ? currentText + ' ' + line : line;
+            }
+          }
+          if (currentText) {
+            items.push({ start: currentStart, duration: currentDuration, text: currentText.replace(/<[^>]+>/g, '').trim() });
+          }
+
+          if (items.length > 0) {
+            return {
+              language: targetCap.label || targetCap.languageCode,
+              languageCode: targetCap.languageCode,
+              items: items
+            };
+          }
+        }
+      }
+    }
+  } catch (e) {
+    Logger.log('handleTranscript error: ' + e.toString());
+  }
+
+  return {
+    language: lang,
+    languageCode: lang,
+    items: [],
+    message: 'この動画の字幕・文字起こしは利用できません。'
+  };
+}
+
+/**
+ * 19. プロキシ中継ハンドラー (UrlFetchApp によるフィルタリング・CORS回避)
+ */
+function handleProxy(e) {
+  var targetUrl = e && e.parameter && e.parameter.url;
+  var callback = e && e.parameter && e.parameter.callback;
+
+  if (!targetUrl) {
+    return ContentService.createTextOutput(JSON.stringify({ error: "Missing url parameter" }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
+  try {
+    var response = UrlFetchApp.fetch(targetUrl, {
+      muteHttpExceptions: true,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*'
+      }
+    });
+
+    var responseText = response.getContentText();
+    var responseCode = response.getResponseCode();
+
+    if (callback && /^[a-zA-Z_$][0-9a-zA-Z_$]*$/.test(callback)) {
+      var jsonpData = {
+        ok: responseCode >= 200 && responseCode < 300,
+        status: responseCode,
+        data: null
+      };
+      try {
+        jsonpData.data = JSON.parse(responseText);
+      } catch (parseErr) {
+        jsonpData.data = responseText;
+      }
+      return ContentService.createTextOutput(callback + '(' + JSON.stringify(jsonpData) + ')')
+        .setMimeType(ContentService.MimeType.JAVASCRIPT);
+    }
+
+    return ContentService.createTextOutput(responseText)
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    var errObj = {
+      error: err.toString(),
+      code: 'GAS_FETCH_FAILED',
+      ok: false,
+      status: 502
+    };
+
+    if (callback && /^[a-zA-Z_$][0-9a-zA-Z_$]*$/.test(callback)) {
+      return ContentService.createTextOutput(callback + '(' + JSON.stringify(errObj) + ')')
+        .setMimeType(ContentService.MimeType.JAVASCRIPT);
+    }
+
+    return ContentService.createTextOutput(JSON.stringify(errObj))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+/**
+ * 20. YouTube Education 用埋め込みURL生成
+ */
+function handleStreamYoutubeEducation(videoId, query) {
+  var eduParamRes = handleEducationParam();
+  var param = (eduParamRes && eduParamRes.param) || '';
+  if (!param) {
+    param = '?enablejsapi=1&rel=0&control=1&showinfo=0&start=0&autoplay=0&cc_load_policy=0&errorlinks=1&hl=ja&authuser=0&modestbranding=1';
+  } else if (param.indexOf('?') !== 0) {
+    param = '?' + param;
+  }
+
+  var fullUrl = 'https://www.youtubeeducation.com/embed/' + videoId + param;
+  return {
+    url: fullUrl,
+    videoId: videoId,
+    param: param,
+    status: 'ok'
+  };
+}
+
+/**
+ * 21. 最新HTMLビルドとの同期ハンドラー
+ */
+function refreshHtmlToDocs() {
+  try {
+    var sourceUrl = 'https://raw.githubusercontent.com/ajgpw/siatube/refs/heads/main/siatube-full.html.txt';
+    var res = UrlFetchApp.fetch(sourceUrl, { muteHttpExceptions: true });
+    if (res.getResponseCode() === 200) {
+      var content = res.getContentText();
+      return {
+        success: true,
+        bytes: content.length,
+        syncedAt: new Date().toISOString()
+      };
+    }
+    return { success: false, code: res.getResponseCode() };
+  } catch (e) {
+    return { success: false, error: e.toString() };
+  }
+}
+
+
+

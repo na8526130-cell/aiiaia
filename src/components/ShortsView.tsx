@@ -18,7 +18,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { YouTubeVideoItem, PlaybackMode } from '../types';
-import { formatViewCount, formatPublishedAt, cleanCommentText } from '../utils/formatters';
+import { formatViewCount, formatPublishedAt, cleanCommentText, parseYouTubeUrl } from '../utils/formatters';
 import { EducationPlayer } from './EducationPlayer';
 import { AuthorAvatar } from './AuthorAvatar';
 import { ThumbnailImage } from './ThumbnailImage';
@@ -226,8 +226,57 @@ export const ShortsView: React.FC<ShortsViewProps> = ({
 
   const handleGridSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchInput.trim()) return;
-    setSearchQuery(searchInput.trim());
+    const val = searchInput.trim();
+    if (!val) return;
+
+    // Direct YouTube / Shorts URL check
+    const parsed = parseYouTubeUrl(val);
+    if (parsed.videoId) {
+      const directShort: YouTubeVideoItem = {
+        id: parsed.videoId,
+        snippet: {
+          title: 'YouTube Short',
+          description: '#shorts',
+          publishedAt: new Date().toISOString(),
+          channelId: '',
+          channelTitle: 'YouTube',
+          thumbnails: {
+            high: { url: `https://i.ytimg.com/vi/${parsed.videoId}/hqdefault.jpg` },
+            medium: { url: `https://i.ytimg.com/vi/${parsed.videoId}/mqdefault.jpg` },
+            default: { url: `https://i.ytimg.com/vi/${parsed.videoId}/default.jpg` }
+          }
+        }
+      };
+
+      setShorts((prev) => {
+        const filtered = prev.filter((p) => {
+          const id = typeof p.id === 'string' ? p.id : (p.id as any)?.videoId;
+          return id !== parsed.videoId;
+        });
+        return [directShort, ...filtered];
+      });
+      setSelectedIndex(0);
+      setSearchInput('');
+
+      // Fetch metadata asynchronously
+      customFetch(`/api/youtube/video/${parsed.videoId}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.items && data.items[0]) {
+            setShorts((prev) => {
+              const updated = [...prev];
+              if (updated.length > 0) {
+                updated[0] = data.items[0];
+              }
+              return updated;
+            });
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+
+    setSearchQuery(val);
   };
 
   const handleTagClick = (tag: string) => {

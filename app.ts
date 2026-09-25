@@ -476,45 +476,221 @@ async function invidiousFallbackSearch(query: string, primaryUrl: string, page: 
   return { items: [] };
 }
 
-// 0. YouTube Education Dynamic Parameters from Google Spreadsheet
-let cachedEduParam: { param: string; expiresAt: number } | null = null;
+// 0. YouTube Education Dynamic Parameters & Widget API from Google Spreadsheet
+interface CachedEduData {
+  parameterText: string;
+  widgetApiSource: string;
+  expiresAt: number;
+}
 
-app.get('/api/education-param', async (req, res) => {
-  if (cachedEduParam && cachedEduParam.expiresAt > Date.now()) {
-    return res.json({ success: true, param: cachedEduParam.param, cached: true });
+let cachedEduData: CachedEduData | null = null;
+
+async function getSpreadsheetEduConfig(force = false): Promise<CachedEduData> {
+  if (!force && cachedEduData && cachedEduData.expiresAt > Date.now()) {
+    return cachedEduData;
+  }
+
+  const sheetId = '1dily2wiik92TAyK3zyIsu8TDuyYNoF20IM1iMk_X-pg';
+  const sheetName = 'Youtube-education-parameter';
+  const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}&range=A1:A2&headers=0`;
+
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 8000);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(tid);
+
+    if (!response.ok) {
+      throw new Error(`Spreadsheet fetch failed: ${response.status}`);
+    }
+
+    const text = await response.text();
+    const prefix = 'google.visualization.Query.setResponse(';
+    const n = text.indexOf(prefix);
+    const r = text.lastIndexOf(');');
+    if (n < 0 || r < n) {
+      throw new Error('Invalid spreadsheet response format');
+    }
+
+    const data = JSON.parse(text.slice(n + prefix.length, r));
+    const paramRaw = data.table?.rows?.[0]?.c?.[0]?.v || '';
+    const widgetApiRaw = data.table?.rows?.[1]?.c?.[0]?.v || '';
+
+    let parameterText = String(paramRaw).replace(/&amp;/g, '&').trim();
+    if (parameterText && !parameterText.startsWith('?')) {
+      parameterText = '?' + parameterText;
+    }
+
+    cachedEduData = {
+      parameterText: parameterText || '?enablejsapi=1&rel=0&control=1&showinfo=0&start=0&autoplay=0&cc_load_policy=0&errorlinks=1&hl=ja&authuser=0&modestbranding=1',
+      widgetApiSource: String(widgetApiRaw || ''),
+      expiresAt: Date.now() + 60 * 60 * 1000 // 1 hour cache
+    };
+    return cachedEduData;
+  } catch (err: any) {
+    console.warn('Failed to fetch education param from spreadsheet:', err.message);
+    if (cachedEduData) {
+      return cachedEduData;
+    }
+    return {
+      parameterText: '?enablejsapi=1&rel=0&control=1&showinfo=0&start=0&autoplay=0&cc_load_policy=0&errorlinks=1&hl=ja&authuser=0&modestbranding=1',
+      widgetApiSource: '',
+      expiresAt: Date.now() + 60 * 1000
+    };
+  }
+}
+
+// 0-1. YouTube Education Stream URL Generator (/api/stream/youtubeeducation/:videoId)
+app.get('/api/stream/youtubeeducation/:videoId', async (req, res) => {
+  const { videoId } = req.params;
+  if (!videoId || !/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
+    return res.status(400).json({ error: 'videoId must be an 11-character YouTube video ID' });
   }
 
   try {
-    const sheetId = '1dily2wiik92TAyK3zyIsu8TDuyYNoF20IM1iMk_X-pg';
-    const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json`;
-    const controller = new AbortController();
-    const tid = setTimeout(() => controller.abort(), 6000);
-    const response = await fetch(sheetUrl, { signal: controller.signal });
-    clearTimeout(tid);
+    const config = await getSpreadsheetEduConfig();
+    const param = config.parameterText || '?enablejsapi=1&rel=0&control=1&showinfo=0&start=0&autoplay=0&cc_load_policy=0&errorlinks=1&hl=ja&authuser=0&modestbranding=1';
+    
+    // YouTube Education / restriction bypass embed URL
+    const embedUrl = `https://www.youtubeeducation.com/embed/${videoId}${param}`;
 
-    const text = await response.text();
-    const jsonStr = text.replace(/^[^{]*/, '').replace(/[^}]*$/, '');
-    const data = JSON.parse(jsonStr);
-    let param = data.table?.rows?.[0]?.c?.[0]?.v || '';
-    param = param.replace(/&amp;/g, '&').trim();
-
-    if (!param.startsWith('?') && param.length > 0) {
-      param = '?' + param;
-    }
-
-    if (param) {
-      cachedEduParam = {
-        param,
-        expiresAt: Date.now() + 10 * 60 * 1000 // 10 minutes cache
-      };
-      return res.json({ success: true, param });
-    }
+    return res.json({
+      url: embedUrl,
+      videoId,
+      param
+    });
   } catch (err: any) {
-    console.warn('Failed to fetch education param from spreadsheet:', err.message);
+    console.error('Error generating youtubeeducation stream url:', err);
+    return res.status(500).json({ error: err.message || 'Failed to generate YouTube Education URL' });
+  }
+});
+
+// 0-2. YouTube Education Dynamic Parameters & Widget API
+app.get('/api/education-param', async (req, res) => {
+  try {
+    const force = req.query.force === 'true';
+    const config = await getSpreadsheetEduConfig(force);
+    return res.json({
+      success: true,
+      param: config.parameterText,
+      widgetApiSource: config.widgetApiSource,
+      hasWidgetApi: Boolean(config.widgetApiSource && config.widgetApiSource.length > 100)
+    });
+  } catch (err: any) {
+    return res.json({
+      success: false,
+      param: '?enablejsapi=1&rel=0&control=1&showinfo=0&start=0&autoplay=0&cc_load_policy=0&errorlinks=1&hl=ja&authuser=0&modestbranding=1',
+      widgetApiSource: '',
+      hasWidgetApi: false
+    });
+  }
+});
+
+// 0-3. Stream status ping
+app.get('/api/stream/status', (req, res) => {
+  res.json({
+    status: 'ok',
+    generatedAt: new Date().toISOString(),
+    processing: {
+      count: 0,
+      ids: []
+    }
+  });
+});
+
+// 0-4. Google Apps Script (GAS) Sync & Code Generator
+app.get('/api/gas/code', (req, res) => {
+  const gasScript = `/**
+ * しあTube - Google Apps Script (GAS) サーバーコード
+ * 学校・組織のフィルタリング回避 & Webアプリ配信用
+ */
+
+function doGet(e) {
+  if (e && e.parameter && e.parameter.url) {
+    return handleProxy(e);
+  }
+  return HtmlService.createHtmlOutputFromFile('index')
+    .setTitle('しあTube')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=5');
+}
+
+function handleProxy(e) {
+  var targetUrl = e.parameter.url;
+  var callback = e.parameter.callback;
+  if (!targetUrl) {
+    return ContentService.createTextOutput(JSON.stringify({ error: "Missing url parameter" }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+  try {
+    var response = UrlFetchApp.fetch(targetUrl, {
+      muteHttpExceptions: true,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+    var text = response.getContentText();
+    var code = response.getResponseCode();
+    if (callback && /^[a-zA-Z_$][0-9a-zA-Z_$]*$/.test(callback)) {
+      var data = { ok: code >= 200 && code < 300, status: code, data: null };
+      try { data.data = JSON.parse(text); } catch (p) { data.data = text; }
+      return ContentService.createTextOutput(callback + '(' + JSON.stringify(data) + ')')
+        .setMimeType(ContentService.MimeType.JAVASCRIPT);
+    }
+    return ContentService.createTextOutput(text)
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    var errData = { error: err.toString(), code: 'GAS_FETCH_FAILED', ok: false, status: 502 };
+    if (callback && /^[a-zA-Z_$][0-9a-zA-Z_$]*$/.test(callback)) {
+      return ContentService.createTextOutput(callback + '(' + JSON.stringify(errData) + ')')
+        .setMimeType(ContentService.MimeType.JAVASCRIPT);
+    }
+    return ContentService.createTextOutput(JSON.stringify(errData))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function refreshHtmlToDocs() {
+  try {
+    var sourceUrl = 'https://raw.githubusercontent.com/ajgpw/siatube/refs/heads/main/siatube-full.html.txt';
+    var res = UrlFetchApp.fetch(sourceUrl, { muteHttpExceptions: true });
+    if (res.getResponseCode() === 200) {
+      return { success: true, bytes: res.getContentText().length, syncedAt: new Date().toISOString() };
+    }
+    return { success: false, code: res.getResponseCode() };
+  } catch (e) {
+    return { success: false, error: e.toString() };
+  }
+}
+`;
+  if (req.query.format === 'text') {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.send(gasScript);
+  }
+  return res.json({
+    success: true,
+    code: gasScript,
+    functionNames: ['doGet', 'handleProxy', 'refreshHtmlToDocs']
+  });
+});
+
+// Premium Gate Authentication (ID & Password verification)
+app.post('/api/auth/verify', (req, res) => {
+  const expectedId = (process.env.PREMIUM_ID || process.env.KAITO_ID || 'kaito').trim();
+  const expectedPassword = (process.env.PREMIUM_PASSWORD || process.env.KAITO_PASSWORD || '@0726kaito').trim();
+
+  const { username = '', password = '' } = req.body || {};
+  const trimmedUser = String(username).trim();
+  const trimmedPass = String(password).trim();
+
+  if (trimmedUser === expectedId && trimmedPass === expectedPassword) {
+    return res.json({ success: true });
   }
 
-  const defaultParam = '?autoplay=1&mute=0&controls=1&start=0&playsinline=1&rel=0&iv_load_policy=3&modestbranding=1&enablejsapi=1';
-  return res.json({ success: false, param: defaultParam });
+  return res.status(401).json({
+    success: false,
+    message: '会員IDまたはパスワードが一致しません。正しい認証情報を入力してください。'
+  });
 });
 
 // 1. Trending / Most Popular Videos
@@ -650,13 +826,16 @@ app.get('/api/youtube/videos', async (req, res) => {
 
 // 6. Related Videos Endpoint
 app.get('/api/youtube/related/:id', async (req, res) => {
-  const { innertubeUrl } = getRequestConfig(req);
+  const { innertubeUrl, invidiousUrl } = getRequestConfig(req);
   const { id } = req.params;
+  const queryTitle = (req.query.q as string) || '';
 
+  // 1. Try InnerTube Worker videos/:id for recommended videos
   try {
     const itRes = await fetchInnerTubeWorker(innertubeUrl, `videos/${id}`);
-    if (itRes.data && Array.isArray(itRes.data.recommendedVideos) && itRes.data.recommendedVideos.length > 0) {
-      const items = itRes.data.recommendedVideos.map(convertInnerTubeItemToYouTubeItem);
+    const recs = itRes.data?.recommendedVideos || itRes.data?.relatedVideos || itRes.data?.related;
+    if (Array.isArray(recs) && recs.length > 0) {
+      const items = recs.map(convertInnerTubeItemToYouTubeItem);
       return res.json({
         kind: 'youtube#searchResponse',
         items,
@@ -665,6 +844,42 @@ app.get('/api/youtube/related/:id', async (req, res) => {
     }
   } catch (err) {
     console.warn('InnerTube related error:', err);
+  }
+
+  // 2. Invidious fallback for related videos (Invidious /api/v1/videos/:id always has recommendedVideos)
+  try {
+    const invRes = await fetchInvidious(invidiousUrl, `videos/${id}`);
+    if (invRes.data && Array.isArray(invRes.data.recommendedVideos) && invRes.data.recommendedVideos.length > 0) {
+      const items = invRes.data.recommendedVideos.map(convertInvidiousItemToYouTubeItem);
+      return res.json({
+        kind: 'youtube#searchResponse',
+        items,
+        nextPageToken: null
+      });
+    }
+  } catch (err) {
+    console.warn('Invidious related error:', err);
+  }
+
+  // 3. Title Search fallback: search for similar videos using the title query
+  if (queryTitle) {
+    try {
+      const searchRes = await fetchInnerTubeWorker(innertubeUrl, 'search', { q: queryTitle, limit: '20' });
+      if (searchRes.data && Array.isArray(searchRes.data.results) && searchRes.data.results.length > 0) {
+        const filtered = searchRes.data.results
+          .filter((item: any) => item.videoId !== id && item.id !== id)
+          .map(convertInnerTubeItemToYouTubeItem);
+        if (filtered.length > 0) {
+          return res.json({
+            kind: 'youtube#searchResponse',
+            items: filtered,
+            nextPageToken: null
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('InnerTube title search fallback error:', err);
+    }
   }
 
   return res.json({
@@ -699,11 +914,22 @@ app.get('/api/youtube/comments/:id', async (req, res) => {
 
 // 7b. Comment Replies
 app.get('/api/youtube/comments/replies/:id', async (req, res) => {
-  const { provider, innertubeUrl, invidiousUrl, youtubeKey, forceYoutubeV3 } = getRequestConfig(req);
+  const { innertubeUrl, invidiousUrl, youtubeKey } = getRequestConfig(req);
   const { id } = req.params;
   const { pageToken, maxResults = '20' } = req.query;
 
-  // 1. Primary: YouTube Official API v3
+  // 1. Try InnerTube Worker
+  try {
+    const itParams: Record<string, string> = { limit: String(maxResults) };
+    if (pageToken) itParams.continuation = String(pageToken);
+    const itRes = await fetchInnerTubeWorker(innertubeUrl, `comments/replies/${id}`, itParams);
+    if (itRes.data && Array.isArray(itRes.data.comments) && itRes.data.comments.length > 0) {
+      const items = itRes.data.comments.map((c: any) => convertSingleInvidiousComment(c));
+      return res.json({ items, nextPageToken: itRes.data.continuation || null });
+    }
+  } catch (err) {}
+
+  // 2. Official YouTube API
   if (youtubeKey) {
     try {
       const params: Record<string, string> = {
@@ -722,7 +948,7 @@ app.get('/api/youtube/comments/replies/:id', async (req, res) => {
     }
   }
 
-  // 2. Fallback: Invidious
+  // 3. Fallback: Invidious
   if (pageToken) {
     try {
       const invRes = await fetchInvidious(invidiousUrl, `comments/${id}`, { continuation: String(pageToken) });
@@ -757,25 +983,133 @@ app.get('/api/youtube/channel/:id', async (req, res) => {
   });
 });
 
-// 8b. Channel Uploaded Videos Endpoint (Supports All Videos via Uploads Playlist & Pagination)
+// 8b. Channel Uploaded Videos Endpoint (Supports All Videos via Uploads & Pagination)
 app.get('/api/youtube/channel/videos/:id', async (req, res) => {
-  const { innertubeUrl } = getRequestConfig(req);
+  const { innertubeUrl, invidiousUrl } = getRequestConfig(req);
   const { id } = req.params;
+  const { pageToken, page = '1' } = req.query;
 
+  // 1. Try InnerTube Worker channels/:id/videos
   try {
-    const itRes = await fetchInnerTubeWorker(innertubeUrl, `channels/${id}/videos`);
+    const queryParams: Record<string, string> = {};
+    if (pageToken && typeof pageToken === 'string') {
+      queryParams.continuation = pageToken;
+    }
+    const itRes = await fetchInnerTubeWorker(innertubeUrl, `channels/${id}/videos`, queryParams);
     if (itRes.data && Array.isArray(itRes.data.videos) && itRes.data.videos.length > 0) {
       const items = itRes.data.videos.map(convertInnerTubeItemToYouTubeItem);
-      return res.json({ kind: 'youtube#searchResponse', items, nextPageToken: null });
+      return res.json({
+        kind: 'youtube#searchResponse',
+        items,
+        nextPageToken: itRes.data.continuation || null
+      });
     }
   } catch (err) {
     console.warn('InnerTube channel videos error:', err);
+  }
+
+  // 2. Try Invidious channels/:id/videos (robust fallback supporting all uploads & continuation)
+  try {
+    const invQueryParams: Record<string, string> = {};
+    if (pageToken && typeof pageToken === 'string') {
+      invQueryParams.continuation = pageToken;
+    } else if (page) {
+      invQueryParams.page = String(page);
+    }
+    const invRes = await fetchInvidious(invidiousUrl, `channels/${id}/videos`, invQueryParams);
+    if (invRes.data && (Array.isArray(invRes.data.videos) || Array.isArray(invRes.data))) {
+      const vList = Array.isArray(invRes.data.videos) ? invRes.data.videos : invRes.data;
+      const items = vList.map(convertInvidiousItemToYouTubeItem);
+      return res.json({
+        kind: 'youtube#searchResponse',
+        items,
+        nextPageToken: invRes.data.continuation || null
+      });
+    }
+  } catch (err) {
+    console.warn('Invidious channel videos error:', err);
+  }
+
+  // 3. Try Invidious uploads playlist (replace UC with UU)
+  if (id.startsWith('UC')) {
+    const uploadsPlaylistId = 'UU' + id.slice(2);
+    try {
+      const itPlRes = await fetchInnerTubeWorker(innertubeUrl, `playlists/${uploadsPlaylistId}`);
+      if (itPlRes.data && Array.isArray(itPlRes.data.videos) && itPlRes.data.videos.length > 0) {
+        const items = itPlRes.data.videos.map(convertInnerTubeItemToYouTubeItem);
+        return res.json({
+          kind: 'youtube#searchResponse',
+          items,
+          nextPageToken: null
+        });
+      }
+    } catch (err) {}
   }
 
   return res.json({
     items: [],
     nextPageToken: null
   });
+});
+
+// 8b2. Channel Playlists Endpoint (Fetch all playlists created by this channel)
+app.get('/api/youtube/channel/playlists/:id', async (req, res) => {
+  const { innertubeUrl, invidiousUrl } = getRequestConfig(req);
+  const { id } = req.params;
+
+  // 1. Try Invidious channel playlists
+  try {
+    const invRes = await fetchInvidious(invidiousUrl, `channels/playlists/${id}`);
+    if (invRes.data && Array.isArray(invRes.data.playlists) && invRes.data.playlists.length > 0) {
+      const items = invRes.data.playlists.map((pl: any) => ({
+        id: pl.playlistId || pl.id,
+        snippet: {
+          title: pl.title || '再生リスト',
+          description: pl.description || '',
+          channelTitle: pl.author || '',
+          channelId: id,
+          publishedAt: '',
+          thumbnails: {
+            medium: { url: pl.playlistThumbnail || `https://i.ytimg.com/vi/${pl.videoCount ? 'default' : ''}/hqdefault.jpg` },
+            high: { url: pl.playlistThumbnail || `https://i.ytimg.com/vi/${pl.videoCount ? 'default' : ''}/hqdefault.jpg` }
+          }
+        },
+        contentDetails: {
+          itemCount: pl.videoCount || 0
+        }
+      }));
+      return res.json({ items, nextPageToken: null });
+    }
+  } catch (err) {
+    console.warn('Invidious channel playlists error:', err);
+  }
+
+  // 2. Try InnerTube channel playlists
+  try {
+    const itRes = await fetchInnerTubeWorker(innertubeUrl, `channels/${id}/playlists`);
+    if (itRes.data && Array.isArray(itRes.data.playlists) && itRes.data.playlists.length > 0) {
+      const items = itRes.data.playlists.map((pl: any) => ({
+        id: pl.playlistId || pl.id,
+        snippet: {
+          title: pl.title || '再生リスト',
+          description: pl.description || '',
+          channelTitle: pl.author || '',
+          channelId: id,
+          publishedAt: '',
+          thumbnails: {
+            medium: { url: pl.thumbnail || '' },
+            high: { url: pl.thumbnail || '' }
+          }
+        },
+        contentDetails: {
+          itemCount: pl.videoCount || 0
+        }
+      }));
+      return res.json({ items, nextPageToken: null });
+    }
+  } catch (err) {}
+
+  return res.json({ items: [], nextPageToken: null });
 });
 
 // 8c. YouTube Shorts API Endpoint (Strict Vertical Shorts Only)
@@ -813,12 +1147,13 @@ app.get('/api/youtube/shorts', async (req, res) => {
 
 // 8d. YouTube Playlist Endpoint (Fetch Playlist Info & All Videos)
 app.get('/api/youtube/playlist/:id', async (req, res) => {
-  const { innertubeUrl } = getRequestConfig(req);
+  const { innertubeUrl, invidiousUrl } = getRequestConfig(req);
   const { id } = req.params;
 
+  // 1. Try InnerTube Worker
   try {
     const itRes = await fetchInnerTubeWorker(innertubeUrl, `playlists/${id}`);
-    if (itRes.data && Array.isArray(itRes.data.videos)) {
+    if (itRes.data && Array.isArray(itRes.data.videos) && itRes.data.videos.length > 0) {
       const items = itRes.data.videos.map(convertInnerTubeItemToYouTubeItem);
       return res.json({
         playlist: {
@@ -837,6 +1172,28 @@ app.get('/api/youtube/playlist/:id', async (req, res) => {
     console.warn('InnerTube playlist error:', err);
   }
 
+  // 2. Try Invidious playlists/:id
+  try {
+    const invRes = await fetchInvidious(invidiousUrl, `playlists/${id}`);
+    if (invRes.data && Array.isArray(invRes.data.videos)) {
+      const items = invRes.data.videos.map(convertInvidiousItemToYouTubeItem);
+      return res.json({
+        playlist: {
+          id,
+          snippet: {
+            title: invRes.data.title || '再生リスト',
+            description: invRes.data.description || '',
+            channelTitle: invRes.data.author || ''
+          }
+        },
+        items,
+        nextPageToken: null
+      });
+    }
+  } catch (err) {
+    console.warn('Invidious playlist error:', err);
+  }
+
   return res.json({
     playlist: null,
     items: [],
@@ -846,10 +1203,273 @@ app.get('/api/youtube/playlist/:id', async (req, res) => {
   });
 });
 
+// 8e. Search Suggestions Endpoint (Google Suggest / YouTube autocomplete API)
+app.get('/api/youtube/suggest', async (req, res) => {
+  const { q = '' } = req.query;
+  const trimmed = String(q).trim();
+  if (!trimmed) {
+    return res.json([]);
+  }
+
+  try {
+    const url = `https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&hl=ja&q=${encodeURIComponent(trimmed)}`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data) && Array.isArray(data[1])) {
+        return res.json(data[1]);
+      }
+      return res.json(data);
+    }
+  } catch (err) {
+    console.warn('Suggest fetch error:', err);
+  }
+
+  return res.json([]);
+});
+
+// 8f. Channel Playlists Endpoint
+app.get('/api/youtube/channel/playlists/:id', async (req, res) => {
+  const { innertubeUrl, invidiousUrl, youtubeKey } = getRequestConfig(req);
+  const { id } = req.params;
+
+  // 1. Try InnerTube
+  try {
+    const itRes = await fetchInnerTubeWorker(innertubeUrl, `channels/${id}/playlists`);
+    if (itRes.data && Array.isArray(itRes.data.playlists) && itRes.data.playlists.length > 0) {
+      const items = itRes.data.playlists.map((pl: any) => ({
+        id: pl.playlistId || pl.id,
+        title: pl.title,
+        thumbnail: pl.thumbnail || pl.thumbnails?.[0]?.url,
+        videoCount: pl.videoCount || pl.itemCount || 0,
+        snippet: {
+          title: pl.title,
+          thumbnails: {
+            high: { url: pl.thumbnail || pl.thumbnails?.[0]?.url || '' },
+            medium: { url: pl.thumbnail || pl.thumbnails?.[0]?.url || '' }
+          }
+        },
+        contentDetails: {
+          itemCount: pl.videoCount || pl.itemCount || 0
+        }
+      }));
+      return res.json({ items });
+    }
+  } catch (err) {}
+
+  // 2. Official YouTube API
+  if (youtubeKey) {
+    try {
+      const data = await fetchYouTube('playlists', {
+        part: 'snippet,contentDetails',
+        channelId: id,
+        maxResults: '24'
+      }, youtubeKey);
+      if (!data.error && data.items) {
+        return res.json(data);
+      }
+    } catch (err) {}
+  }
+
+  // 3. Try Invidious
+  try {
+    const invRes = await fetchInvidious(invidiousUrl, `channels/playlists/${id}`);
+    if (invRes.data && Array.isArray(invRes.data.playlists)) {
+      const items = invRes.data.playlists.map((pl: any) => ({
+        id: pl.playlistId || pl.id,
+        title: pl.title,
+        thumbnail: pl.playlistThumbnail,
+        videoCount: pl.videoCount || 0,
+        snippet: {
+          title: pl.title,
+          thumbnails: {
+            high: { url: pl.playlistThumbnail || '' },
+            medium: { url: pl.playlistThumbnail || '' }
+          }
+        },
+        contentDetails: {
+          itemCount: pl.videoCount || 0
+        }
+      }));
+      return res.json({ items });
+    }
+  } catch (err) {}
+
+  return res.json({ items: [] });
+});
+
+// 8g. Channel Community Posts Endpoint
+app.get('/api/youtube/channel/community/:id', async (req, res) => {
+  const { innertubeUrl, invidiousUrl } = getRequestConfig(req);
+  const { id } = req.params;
+
+  // 1. Try InnerTube
+  try {
+    const itRes = await fetchInnerTubeWorker(innertubeUrl, `channels/${id}/community`);
+    if (itRes.data && Array.isArray(itRes.data.posts) && itRes.data.posts.length > 0) {
+      const items = itRes.data.posts.map((post: any) => ({
+        id: post.postId || post.id,
+        contentText: post.text || post.contentText || '',
+        publishedTimeText: post.publishedTimeText || post.published || '',
+        attachmentImage: post.attachmentImage || post.image || null,
+        voteCount: post.voteCount || post.likes || 0,
+        replyCount: post.replyCount || 0
+      }));
+      return res.json({ items });
+    }
+  } catch (err) {}
+
+  // 2. Try Invidious
+  try {
+    const invRes = await fetchInvidious(invidiousUrl, `channels/community/${id}`);
+    if (invRes.data && Array.isArray(invRes.data.comments)) {
+      const items = invRes.data.comments.map((post: any) => ({
+        id: post.commentId || post.id,
+        contentText: post.content || post.text || '',
+        publishedTimeText: post.publishedText || '',
+        attachmentImage: post.attachmentImage || null,
+        voteCount: post.likeCount || 0,
+        replyCount: post.replyCount || 0
+      }));
+      return res.json({ items });
+    }
+  } catch (err) {}
+
+  return res.json({ items: [] });
+});
+
+// 8h. Video Transcript / Captions Endpoint (Interactive Timestamps)
+app.get('/api/youtube/transcript/:id', async (req, res) => {
+  const { invidiousUrl, innertubeUrl } = getRequestConfig(req);
+  const { id } = req.params;
+  const lang = (req.query.lang as string) || 'ja';
+
+  interface TranscriptItem {
+    start: number;
+    duration: number;
+    text: string;
+  }
+
+  // Helper: parse seconds from timestamp string like 00:01:23.450 or 01:23.450
+  const parseTime = (timeStr: string): number => {
+    const parts = timeStr.trim().split(':');
+    if (parts.length === 3) {
+      return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+    } else if (parts.length === 2) {
+      return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+    }
+    return parseFloat(timeStr) || 0;
+  };
+
+  // Helper: parse WebVTT text into TranscriptItem array
+  const parseVtt = (vttText: string): TranscriptItem[] => {
+    const lines = vttText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const items: TranscriptItem[] = [];
+    let currentStart = 0;
+    let currentDuration = 0;
+    let currentText = '';
+
+    const timeRegex = /((?:\d{2}:)?\d{2}:\d{2}\.\d{3})\s*-->\s*((?:\d{2}:)?\d{2}:\d{2}\.\d{3})/;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      const match = line.match(timeRegex);
+      if (match) {
+        if (currentText) {
+          items.push({
+            start: Math.round(currentStart * 10) / 10,
+            duration: Math.round(currentDuration * 10) / 10,
+            text: currentText.replace(/<[^>]+>/g, '').trim()
+          });
+          currentText = '';
+        }
+        const s = parseTime(match[1]);
+        const e = parseTime(match[2]);
+        currentStart = s;
+        currentDuration = Math.max(1, e - s);
+      } else if (line && !line.startsWith('WEBVTT') && !line.startsWith('NOTE') && !/^\d+$/.test(line)) {
+        currentText = currentText ? `${currentText} ${line}` : line;
+      }
+    }
+    if (currentText) {
+      items.push({
+        start: Math.round(currentStart * 10) / 10,
+        duration: Math.round(currentDuration * 10) / 10,
+        text: currentText.replace(/<[^>]+>/g, '').trim()
+      });
+    }
+    return items;
+  };
+
+  // 1. Try Invidious Captions
+  try {
+    const invRes = await fetchInvidious(invidiousUrl, `captions/${id}`);
+    if (invRes.data && Array.isArray(invRes.data.captions) && invRes.data.captions.length > 0) {
+      const caps = invRes.data.captions;
+      // Find requested language or fallback to first
+      const targetCap = caps.find((c: any) => c.languageCode === lang) ||
+        caps.find((c: any) => c.languageCode?.startsWith(lang.slice(0, 2))) ||
+        caps.find((c: any) => c.languageCode === 'en') ||
+        caps[0];
+
+      if (targetCap?.url) {
+        const cleanInst = (invidiousUrl || 'https://yt.omada.cafe').replace(/\/+$/, '');
+        const vttUrl = targetCap.url.startsWith('http') ? targetCap.url : `${cleanInst}${targetCap.url}`;
+        const vttRes = await fetch(vttUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        if (vttRes.ok) {
+          const vttText = await vttRes.text();
+          const items = parseVtt(vttText);
+          if (items.length > 0) {
+            return res.json({
+              language: targetCap.label || targetCap.languageCode,
+              languageCode: targetCap.languageCode,
+              items
+            });
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Invidious caption error:', err);
+  }
+
+  // 2. Try Direct YouTube Timedtext as fallback
+  try {
+    const ttRes = await fetch(`https://www.youtube.com/api/timedtext?v=${id}&lang=${lang}&fmt=vtt`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    });
+    if (ttRes.ok) {
+      const vttText = await ttRes.text();
+      if (vttText.includes('-->')) {
+        const items = parseVtt(vttText);
+        if (items.length > 0) {
+          return res.json({ language: lang, languageCode: lang, items });
+        }
+      }
+    }
+  } catch (err) {}
+
+  return res.json({
+    language: lang,
+    languageCode: lang,
+    items: [],
+    message: 'この動画の字幕・文字起こしは利用できません。'
+  });
+});
+
 // 9. Video Direct Stream Metadata & Multiplexing Endpoints
 interface ResolvedStreamUrls {
+  title?: string;
   v1080?: string;
   v720?: string;
+  v480?: string;
   v360?: string;
   combined720?: string;
   combined360?: string;
@@ -924,24 +1544,27 @@ async function resolveVideoStreams(videoId: string, customInvidiousUrl?: string)
   // 2. Fallback: yt-dlp if Invidious instances fail
   const ytDlpPath = path.join(process.cwd(), 'bin', 'yt-dlp');
   return new Promise((resolve) => {
+    // Specifically request 1080p video stream and best audio stream separately for muxing
     execFile(
       ytDlpPath,
       [
         '-g',
         '-f',
-        'bestvideo[height<=1080],bestvideo[height<=720],bestvideo[height<=360],bestaudio/best',
+        'bestvideo[height<=1080][ext=mp4]/bestvideo[height<=1080]/bestvideo,bestaudio[ext=m4a]/bestaudio',
         `https://www.youtube.com/watch?v=${videoId}`
       ],
-      { timeout: 12000 },
+      { timeout: 25000 },
       (err, stdout) => {
         if (!err && stdout) {
           const lines = stdout.trim().split('\n').filter((l) => l.startsWith('http'));
           if (lines.length >= 2) {
+            const v1080 = lines[0];
+            const audio = lines[1];
             const result: ResolvedStreamUrls = {
-              v1080: lines[0],
-              v720: lines.length >= 3 ? lines[1] : lines[0],
-              v360: lines.length >= 3 ? lines[2] || lines[1] : lines[0],
-              audio: lines[lines.length - 1],
+              v1080,
+              v720: v1080,
+              v360: v1080,
+              audio,
               expiresAt: Date.now() + 2 * 3600 * 1000
             };
             streamUrlCache.set(videoId, result);
@@ -999,11 +1622,101 @@ app.get('/api/youtube/stream/:id', async (req, res) => {
     },
     audioStream: {
       url: `/api/youtube/stream-audio/${id}`,
-      directUrl: `/api/youtube/stream-audio/${id}`,
+      directUrl: `/api/youtube/stream-direct/${id}?quality=audio`,
       quality: 'audio',
       container: 'aac'
     }
   });
+});
+
+// Direct Invidious Google Video Streams (Resolves direct googlevideo.com URLs & Invidious proxy streams)
+app.get('/api/youtube/stream-sources/:id', async (req, res) => {
+  const { id } = req.params;
+  const { invidiousUrl } = getRequestConfig(req);
+
+  try {
+    const urls = await resolveVideoStreams(id, invidiousUrl);
+    const cleanInst = (invidiousUrl || 'https://yt.omada.cafe').replace(/\/+$/, '');
+
+    return res.json({
+      videoId: id,
+      title: urls?.title || `video-${id}`,
+      streams: {
+        v1080: urls?.v1080 || `/api/youtube/stream-direct/${id}?quality=1080`,
+        v720: urls?.v720 || urls?.combined720 || `/api/youtube/stream-direct/${id}?quality=720`,
+        v360: urls?.v360 || urls?.combined360 || `/api/youtube/stream-direct/${id}?quality=360`,
+        audio: urls?.audio || `/api/youtube/stream-direct/${id}?quality=audio`,
+        invidious720: `${cleanInst}/latest_version?id=${id}&itag=22`,
+        invidious360: `${cleanInst}/latest_version?id=${id}&itag=18`,
+        direct720: `/api/youtube/stream-direct/${id}?quality=720`,
+        direct360: `/api/youtube/stream-direct/${id}?quality=360`,
+        directAudio: `/api/youtube/stream-direct/${id}?quality=audio`
+      },
+      audioTracks: [
+        { id: 'audio-ja-std', url: urls?.audio || `/api/youtube/stream-direct/${id}?quality=audio`, lang: 'ja', label: '日本語（標準音声）', isDefault: true, isOriginal: true },
+        { id: 'audio-orig', url: urls?.audio || `/api/youtube/stream-direct/${id}?quality=audio`, lang: 'und', label: 'オリジナル音声', isOriginal: true },
+        { id: 'audio-drc', url: `/api/youtube/stream-direct/${id}?quality=audio&drc=1`, lang: 'ja', label: '夜間音量圧縮 (DRC)', isDrc: true }
+      ],
+      subtitleTracks: [
+        { id: 'sub-ja', url: `https://yt-api.myproxy0108.workers.dev/api/subtitles/${id}?lang=ja`, lang: 'ja', label: '日本語字幕', isDefault: true },
+        { id: 'sub-en', url: `https://yt-api.myproxy0108.workers.dev/api/subtitles/${id}?lang=en`, lang: 'en', label: '英語字幕' },
+        { id: 'sub-auto', url: `https://yt-api.myproxy0108.workers.dev/api/subtitles/${id}?lang=auto`, lang: 'und', label: '自動生成字幕' }
+      ]
+    });
+  } catch (err: any) {
+    const cleanInst = (invidiousUrl || 'https://yt.omada.cafe').replace(/\/+$/, '');
+    return res.json({
+      videoId: id,
+      streams: {
+        v720: `${cleanInst}/latest_version?id=${id}&itag=22`,
+        v360: `${cleanInst}/latest_version?id=${id}&itag=18`,
+        direct720: `/api/youtube/stream-direct/${id}?quality=720`,
+        direct360: `/api/youtube/stream-direct/${id}?quality=360`,
+        directAudio: `/api/youtube/stream-direct/${id}?quality=audio`
+      },
+      audioTracks: [
+        { id: 'audio-ja-std', url: `/api/youtube/stream-direct/${id}?quality=audio`, lang: 'ja', label: '日本語（標準）', isDefault: true, isOriginal: true }
+      ],
+      subtitleTracks: [
+        { id: 'sub-ja', url: `https://yt-api.myproxy0108.workers.dev/api/subtitles/${id}?lang=ja`, lang: 'ja', label: '日本語字幕', isDefault: true }
+      ]
+    });
+  }
+});
+
+// Direct Stream Redirect Endpoint (Redirects 302 to Invidious Google Video stream for instant playback)
+app.get('/api/youtube/stream-direct/:id', async (req, res) => {
+  const { id } = req.params;
+  const { invidiousUrl } = getRequestConfig(req);
+  const quality = req.query.quality === '1080' ? '1080' : req.query.quality === '360' ? '360' : req.query.quality === 'audio' ? 'audio' : '720';
+
+  try {
+    const urls = await resolveVideoStreams(id, invidiousUrl);
+    let targetUrl: string | undefined;
+
+    if (quality === 'audio') {
+      targetUrl = urls?.audio || urls?.combined720 || urls?.combined360;
+    } else if (quality === '360') {
+      targetUrl = urls?.combined360 || urls?.v360 || urls?.combined720 || urls?.v720;
+    } else if (quality === '1080') {
+      targetUrl = urls?.v1080 || urls?.v720 || urls?.combined720;
+    } else {
+      targetUrl = urls?.combined720 || urls?.v720 || urls?.combined360;
+    }
+
+    if (targetUrl && targetUrl.startsWith('http')) {
+      return res.redirect(302, targetUrl);
+    }
+
+    // Fallback directly to Invidious latest_version
+    const cleanInst = (invidiousUrl || 'https://yt.omada.cafe').replace(/\/+$/, '');
+    const itag = quality === '360' ? '18' : '22';
+    return res.redirect(302, `${cleanInst}/latest_version?id=${id}&itag=${itag}`);
+  } catch {
+    const cleanInst = (invidiousUrl || 'https://yt.omada.cafe').replace(/\/+$/, '');
+    const itag = quality === '360' ? '18' : '22';
+    return res.redirect(302, `${cleanInst}/latest_version?id=${id}&itag=${itag}`);
+  }
 });
 
 // Stream Video + Audio Multiplexing via FFmpeg
@@ -1012,9 +1725,22 @@ app.get('/api/youtube/stream-mux/:id', async (req, res) => {
   const { invidiousUrl } = getRequestConfig(req);
   const quality = req.query.quality === '1080' ? '1080' : req.query.quality === '360' ? '360' : '720';
 
+  activeMuxStreams++;
+  totalProcessedStreams++;
+  let hasClosed = false;
+  const decrement = () => {
+    if (!hasClosed) {
+      hasClosed = true;
+      activeMuxStreams = Math.max(0, activeMuxStreams - 1);
+    }
+  };
+  req.on('close', decrement);
+  res.on('finish', decrement);
+
   try {
     const urls = await resolveVideoStreams(id, invidiousUrl);
     if (!urls) {
+      decrement();
       return res.status(502).send('ストリームの取得に失敗しました。');
     }
 
@@ -1100,9 +1826,22 @@ app.get('/api/youtube/stream-audio/:id', async (req, res) => {
   const { id } = req.params;
   const { invidiousUrl } = getRequestConfig(req);
 
+  activeMuxStreams++;
+  totalProcessedStreams++;
+  let hasClosed = false;
+  const decrement = () => {
+    if (!hasClosed) {
+      hasClosed = true;
+      activeMuxStreams = Math.max(0, activeMuxStreams - 1);
+    }
+  };
+  req.on('close', decrement);
+  res.on('finish', decrement);
+
   try {
     const urls = await resolveVideoStreams(id, invidiousUrl);
     if (!urls || (!urls.audio && !urls.combined720 && !urls.combined360)) {
+      decrement();
       return res.status(502).send('音声ストリームの取得に失敗しました。');
     }
 
@@ -1320,6 +2059,87 @@ app.all(['/api/proxy/thumbnail', '/api/fetchAsBase64'], async (req, res) => {
       return res.json({ dataUri: imageUrl, success: false });
     }
     res.redirect(imageUrl);
+  }
+});
+
+// Server Stream & Queue Status Tracker
+let activeMuxStreams = 0;
+let totalProcessedStreams = 0;
+
+app.get('/api/stream/status', (req, res) => {
+  const queueLength = Math.max(0, activeMuxStreams - 2);
+  const estimatedWaitSeconds = queueLength * 3;
+  let status: 'idle' | 'busy' | 'processing' = 'idle';
+  let message = 'サーバーは空いています';
+
+  if (activeMuxStreams > 3) {
+    status = 'busy';
+    message = `サーバーで${activeMuxStreams}件を処理中です（待ち時間: 約${estimatedWaitSeconds}秒）`;
+  } else if (activeMuxStreams > 0) {
+    status = 'processing';
+    message = `サーバーで${activeMuxStreams}件を処理中です`;
+  }
+
+  res.json({
+    status,
+    activeStreams: activeMuxStreams,
+    queueLength,
+    estimatedWaitSeconds,
+    totalProcessed: totalProcessedStreams,
+    message
+  });
+});
+
+// Download Info Endpoint for Type 3 Download Modal
+app.get('/api/download/info/:id', async (req, res) => {
+  const { id } = req.params;
+  const { invidiousUrl, innertubeUrl } = getRequestConfig(req);
+
+  try {
+    const streamData = await resolveVideoStreams(id, invidiousUrl);
+    const m3u8Url = `https://yt-api.myproxy0108.workers.dev/api/stream/${id}.m3u8`;
+
+    res.json({
+      videoId: id,
+      title: streamData?.title || `video-${id}`,
+      m3u8Url,
+      m3u8DevUrl: `https://m3u8.dev/?url=${encodeURIComponent(m3u8Url)}`,
+      standard360: `/api/youtube/stream-mux/${id}?quality=360`,
+      videoOnly: [
+        { label: '1080p (FHD)', quality: '1080p', url: streamData?.v1080 || `/api/youtube/stream-mux/${id}?quality=1080` },
+        { label: '720p (HD)', quality: '720p', url: streamData?.v720 || `/api/youtube/stream-mux/${id}?quality=720` },
+        { label: '480p', quality: '480p', url: streamData?.v480 || `/api/youtube/stream-mux/${id}?quality=480` },
+        { label: '360p', quality: '360p', url: streamData?.combined360 || streamData?.v360 || `/api/youtube/stream-mux/${id}?quality=360` },
+      ],
+      audioOnly: [
+        { label: '音声 AAC/M4A (標準)', format: 'm4a', url: `/api/youtube/stream-audio/${id}` },
+        { label: '音声 MP3 変換ストリーム', format: 'mp3', url: `/api/youtube/stream-audio/${id}?format=mp3` },
+        { label: '音声 WebM 原音', format: 'webm', url: streamData?.audio || `/api/youtube/stream-audio/${id}` }
+      ],
+      subtitles: [
+        { label: '日本語字幕 (VTT)', lang: 'ja', url: `https://yt-api.myproxy0108.workers.dev/api/subtitles/${id}?lang=ja` },
+        { label: '英語字幕 (VTT)', lang: 'en', url: `https://yt-api.myproxy0108.workers.dev/api/subtitles/${id}?lang=en` },
+        { label: '自動生成字幕 (VTT)', lang: 'auto', url: `https://yt-api.myproxy0108.workers.dev/api/subtitles/${id}?lang=auto` }
+      ]
+    });
+  } catch (err: any) {
+    res.json({
+      videoId: id,
+      title: `video-${id}`,
+      m3u8Url: `https://yt-api.myproxy0108.workers.dev/api/stream/${id}.m3u8`,
+      m3u8DevUrl: `https://m3u8.dev/?url=${encodeURIComponent(`https://yt-api.myproxy0108.workers.dev/api/stream/${id}.m3u8`)}`,
+      standard360: `/api/youtube/stream-mux/${id}?quality=360`,
+      videoOnly: [
+        { label: '720p (HD)', quality: '720p', url: `/api/youtube/stream-mux/${id}?quality=720` },
+        { label: '360p', quality: '360p', url: `/api/youtube/stream-mux/${id}?quality=360` }
+      ],
+      audioOnly: [
+        { label: '音声 AAC/M4A', format: 'm4a', url: `/api/youtube/stream-audio/${id}` }
+      ],
+      subtitles: [
+        { label: '日本語字幕 (VTT)', lang: 'ja', url: `https://yt-api.myproxy0108.workers.dev/api/subtitles/${id}?lang=ja` }
+      ]
+    });
   }
 });
 

@@ -222,3 +222,27 @@ export interface ApiSettings {
   forceYoutubeV3?: boolean;
 }
 
+export type DisguisePreset = 'classroom' | 'docs' | 'nhk' | 'wikipedia';
+
+export interface DisguisePresetConfig {
+  id: DisguisePreset;
+  name: string;
+  tabTitle: string;
+  faviconUrl: string;
+  description: string;
+}
+
+export interface TranscriptItem {
+  start: number;
+  duration: number;
+  text: string;
+}
+
+export interface TranscriptResponse {
+  language?: string;
+  languageCode?: string;
+  items: TranscriptItem[];
+  message?: string;
+}
+
+

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Search,
   SlidersHorizontal,
@@ -19,9 +19,16 @@ import {
   Keyboard,
   Film,
   Music,
-  Waves
+  Waves,
+  AlertTriangle
 } from 'lucide-react';
 import { SearchFilters, PlaybackMode, ApiSettings } from '../types';
+import { customFetch } from '../utils/apiClient';
+import { ServerStatusBadge } from './ServerStatusBadge';
+import { ProxyGuideModal } from './ProxyGuideModal';
+import { StealthCloakModal } from './StealthCloakModal';
+import { EyeOff, AlertOctagon, Calculator, Sun, Moon, Laptop } from 'lucide-react';
+import { getThemePreference, setThemePreference, ThemeMode } from '../utils/themeManager';
 
 interface HeaderProps {
   filters: SearchFilters;
@@ -39,6 +46,7 @@ interface HeaderProps {
   emergencyV3Available?: boolean;
   onActivateEmergencyV3?: () => void;
   onDeactivateEmergencyV3?: () => void;
+  onLockDisguise?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -56,21 +64,162 @@ export const Header: React.FC<HeaderProps> = ({
   apiSettings,
   emergencyV3Available = false,
   onActivateEmergencyV3,
-  onDeactivateEmergencyV3
+  onDeactivateEmergencyV3,
+  onLockDisguise
 }) => {
   const [queryInput, setQueryInput] = useState(filters.query);
   const [isListening, setIsListening] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+  const [isSuggestOpen, setIsSuggestOpen] = useState(false);
+  const [isProxyModalOpen, setIsProxyModalOpen] = useState(false);
+  const [isStealthModalOpen, setIsStealthModalOpen] = useState(false);
+  const [hasConnectionBlock, setHasConnectionBlock] = useState(false);
+  const [currentTheme, setCurrentTheme] = useState<ThemeMode>(() => getThemePreference());
+  const suggestRef = useRef<HTMLDivElement>(null);
+
+  // Sync theme changes
+  useEffect(() => {
+    const handleThemeChange = (e: any) => {
+      setCurrentTheme(e.detail?.mode || getThemePreference());
+    };
+    const handleOpenProxy = () => setIsProxyModalOpen(true);
+
+    window.addEventListener('kaito_theme_changed', handleThemeChange);
+    window.addEventListener('kaito_open_proxy_guide', handleOpenProxy);
+
+    return () => {
+      window.removeEventListener('kaito_theme_changed', handleThemeChange);
+      window.removeEventListener('kaito_open_proxy_guide', handleOpenProxy);
+    };
+  }, []);
+
+  const handleCycleTheme = () => {
+    const nextTheme: ThemeMode = currentTheme === 'system' ? 'light' : currentTheme === 'light' ? 'dark' : 'system';
+    setThemePreference(nextTheme);
+    setCurrentTheme(nextTheme);
+  };
+
+  // Restore saved cloak on mount
+  useEffect(() => {
+    const savedPreset = localStorage.getItem('kaito_cloak_preset');
+    if (savedPreset && savedPreset !== 'default') {
+      const titles: Record<string, { title: string; favicon: string }> = {
+        classroom: { title: 'ホーム - Google Classroom', favicon: 'https://ssl.gstatic.com/classroom/favicon.png' },
+        drive: { title: 'マイドライブ - Google ドライブ', favicon: 'https://ssl.gstatic.com/docs/doclist/images/drive_2022q3_32dp.png' },
+        google: { title: 'Google', favicon: 'https://www.google.com/favicon.ico' },
+        desmos: { title: 'Desmos | グラフ計算機', favicon: 'https://www.desmos.com/favicon.ico' }
+      };
+      const found = titles[savedPreset];
+      if (found) {
+        document.title = found.title;
+        let link = document.querySelector("link[rel*='icon']") as HTMLLinkElement;
+        if (!link) {
+          link = document.createElement('link');
+          link.rel = 'icon';
+          document.head.appendChild(link);
+        }
+        link.href = found.favicon;
+      }
+    }
+  }, []);
+
+  // Panic button escape action
+  const handleQuickPanic = () => {
+    const url = localStorage.getItem('kaito_panic_url') || 'https://classroom.google.com/';
+    window.location.replace(url);
+  };
+
+  // Sync external filters.query
+  useEffect(() => {
+    setQueryInput(filters.query);
+  }, [filters.query]);
+
+  // Fetch suggestions on debounce
+  useEffect(() => {
+    const trimmed = queryInput.trim();
+    if (!trimmed || !isSuggestOpen) {
+      setSuggestions([]);
+      setSelectedIndex(-1);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      customFetch(`/api/youtube/suggest?q=${encodeURIComponent(trimmed)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (Array.isArray(data)) {
+            setSuggestions(data.slice(0, 8));
+          } else if (data && Array.isArray(data[1])) {
+            setSuggestions(data[1].slice(0, 8));
+          }
+        })
+        .catch(() => {});
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [queryInput, isSuggestOpen]);
+
+  // Handle outside click to close suggestions
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (suggestRef.current && !suggestRef.current.contains(e.target as Node)) {
+        setIsSuggestOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Listen for global connection block alert
+  useEffect(() => {
+    const handleBlock = () => setHasConnectionBlock(true);
+    window.addEventListener('kaito_connection_blocked', handleBlock);
+    return () => window.removeEventListener('kaito_connection_blocked', handleBlock);
+  }, []);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!isSuggestOpen || suggestions.length === 0) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedIndex((prev) => (prev < suggestions.length - 1 ? prev + 1 : 0));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedIndex((prev) => (prev > 0 ? prev - 1 : suggestions.length - 1));
+    } else if (e.key === 'Enter') {
+      if (selectedIndex >= 0 && selectedIndex < suggestions.length) {
+        e.preventDefault();
+        const selected = suggestions[selectedIndex];
+        setQueryInput(selected);
+        setIsSuggestOpen(false);
+        onSearchSubmit(selected);
+      }
+    } else if (e.key === 'Escape') {
+      setIsSuggestOpen(false);
+      setSelectedIndex(-1);
+    }
+  };
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = queryInput.trim();
-    if (!trimmed) return;
-    onSearchSubmit(trimmed);
+    const term = selectedIndex >= 0 && suggestions[selectedIndex] ? suggestions[selectedIndex] : queryInput.trim();
+    if (!term) return;
+    setIsSuggestOpen(false);
+    onSearchSubmit(term);
   };
 
   const handleClear = () => {
     setQueryInput('');
+    setSuggestions([]);
+    setIsSuggestOpen(false);
     onUpdateFilters({ query: '' });
+  };
+
+  const handleSelectSuggestion = (text: string) => {
+    setQueryInput(text);
+    setIsSuggestOpen(false);
+    onSearchSubmit(text);
   };
 
   const handleVoiceSearch = () => {
@@ -106,6 +255,30 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header className="sticky top-0 z-40 bg-neutral-900 border-b border-neutral-800 text-white shadow-md">
+      {/* Network Connection Block Alert Banner */}
+      {hasConnectionBlock && (
+        <div className="bg-rose-600/90 text-white px-4 py-1.5 text-xs flex items-center justify-between border-b border-rose-500 shadow-sm animate-fade-in">
+          <div className="flex items-center gap-2 font-medium">
+            <AlertTriangle className="w-4 h-4 shrink-0 animate-bounce" />
+            <span>ネットワーク通信またはYouTube APIへの接続が遮断されています。プロキシ設定をご確認ください。</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsProxyModalOpen(true)}
+              className="px-2 py-0.5 bg-white text-rose-700 font-bold rounded text-[11px] hover:bg-neutral-100 transition-colors cursor-pointer"
+            >
+              プロキシ設定
+            </button>
+            <button
+              onClick={() => setHasConnectionBlock(false)}
+              className="p-1 hover:bg-rose-700 rounded text-rose-200 hover:text-white"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Top Header Bar */}
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-3 sm:gap-6">
         {/* Brand Logo */}
@@ -129,70 +302,145 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         </div>
 
-        {/* Search Bar Form */}
-        <form onSubmit={handleFormSubmit} className="flex-1 max-w-xl mx-1 sm:mx-4">
-          <div className="relative flex items-center">
-            <div className="relative flex-1 flex items-center">
-              <input
-                type="text"
-                value={queryInput}
-                onChange={(e) => setQueryInput(e.target.value)}
-                placeholder="キーワードを入力..."
-                className="w-full pl-4 pr-16 py-1.5 bg-neutral-950 border border-neutral-700/80 focus:border-rose-500 rounded-l-full text-xs sm:text-sm text-white placeholder-neutral-500 focus:outline-none transition-colors"
-                id="search-input"
-              />
-              {queryInput && (
-                <button
-                  type="button"
-                  onClick={handleClear}
-                  className="absolute right-3 text-neutral-400 hover:text-white p-1"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              )}
+        {/* Search Bar Form with Suggestions Dropdown */}
+        <div ref={suggestRef} className="flex-1 max-w-xl mx-1 sm:mx-4 relative">
+          <form onSubmit={handleFormSubmit}>
+            <div className="relative flex items-center">
+              <div className="relative flex-1 flex items-center">
+                <input
+                  type="text"
+                  value={queryInput}
+                  onChange={(e) => {
+                    setQueryInput(e.target.value);
+                    setIsSuggestOpen(true);
+                  }}
+                  onFocus={() => setIsSuggestOpen(true)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="検索またはYouTube / ShortsのURLを入力..."
+                  className="w-full pl-4 pr-16 py-1.5 bg-neutral-950 border border-neutral-700/80 focus:border-rose-500 rounded-l-full text-xs sm:text-sm text-white placeholder-neutral-500 focus:outline-none transition-colors"
+                  id="search-input"
+                  autoComplete="off"
+                />
+                {queryInput && (
+                  <button
+                    type="button"
+                    onClick={handleClear}
+                    className="absolute right-3 text-neutral-400 hover:text-white p-1"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+
+              {/* Voice Search Button */}
+              <button
+                type="button"
+                onClick={handleVoiceSearch}
+                title="音声検索"
+                className={`p-2 bg-neutral-800 border-y border-neutral-700 text-neutral-300 hover:text-white hover:bg-neutral-700 transition-colors ${
+                  isListening ? 'text-rose-400 animate-pulse bg-rose-500/10' : ''
+                }`}
+                id="voice-search-btn"
+              >
+                <Mic className="w-4 h-4" />
+              </button>
+
+              {/* Filter Toggle Button */}
+              <button
+                type="button"
+                onClick={onOpenFilterModal}
+                title="検索フィルター"
+                className="p-2 bg-neutral-800 border border-l-0 border-neutral-700 text-neutral-300 hover:text-white hover:bg-neutral-700 transition-colors relative"
+                id="filter-modal-btn"
+              >
+                <SlidersHorizontal className="w-4 h-4" />
+                {(filters.order !== 'relevance' || filters.type !== 'all' || filters.videoDuration !== 'any' || filters.categoryId) && (
+                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-rose-500 rounded-full ring-2 ring-neutral-900" />
+                )}
+              </button>
+
+              {/* Submit Search Button */}
+              <button
+                type="submit"
+                className="px-4 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white font-medium text-xs sm:text-sm rounded-r-full border border-l-0 border-neutral-700 transition-colors flex items-center justify-center shrink-0"
+                id="search-submit-btn"
+              >
+                <Search className="w-4 h-4 text-neutral-300" />
+              </button>
             </div>
+          </form>
 
-            {/* Voice Search Button */}
-            <button
-              type="button"
-              onClick={handleVoiceSearch}
-              title="音声検索"
-              className={`p-2 bg-neutral-800 border-y border-neutral-700 text-neutral-300 hover:text-white hover:bg-neutral-700 transition-colors ${
-                isListening ? 'text-rose-400 animate-pulse bg-rose-500/10' : ''
-              }`}
-              id="voice-search-btn"
-            >
-              <Mic className="w-4 h-4" />
-            </button>
+          {/* Suggestions Popup Dropdown */}
+          {isSuggestOpen && suggestions.length > 0 && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-neutral-900 border border-neutral-800 rounded-xl shadow-2xl overflow-hidden z-50 animate-fade-in">
+              {suggestions.map((item, idx) => (
+                <div
+                  key={idx}
+                  onClick={() => handleSelectSuggestion(item)}
+                  className={`px-4 py-2.5 flex items-center gap-3 text-xs sm:text-sm cursor-pointer transition-colors ${
+                    idx === selectedIndex
+                      ? 'bg-neutral-800 text-white font-medium'
+                      : 'text-neutral-300 hover:bg-neutral-800/60 hover:text-white'
+                  }`}
+                >
+                  <Search className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+                  <span className="truncate">{item}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
-            {/* Filter Toggle Button */}
-            <button
-              type="button"
-              onClick={onOpenFilterModal}
-              title="検索フィルター"
-              className="p-2 bg-neutral-800 border border-l-0 border-neutral-700 text-neutral-300 hover:text-white hover:bg-neutral-700 transition-colors relative"
-              id="filter-modal-btn"
-            >
-              <SlidersHorizontal className="w-4 h-4" />
-              {(filters.order !== 'relevance' || filters.type !== 'all' || filters.videoDuration !== 'any' || filters.categoryId) && (
-                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-rose-500 rounded-full ring-2 ring-neutral-900" />
-              )}
-            </button>
-
-            {/* Submit Search Button */}
-            <button
-              type="submit"
-              className="px-4 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white font-medium text-xs sm:text-sm rounded-r-full border border-l-0 border-neutral-700 transition-colors flex items-center justify-center shrink-0"
-              id="search-submit-btn"
-            >
-              <Search className="w-4 h-4 text-neutral-300" />
-            </button>
-          </div>
-        </form>
-
-        {/* Right Controls: Playback Mode, Region & Settings */}
+        {/* Right Controls */}
         <div className="flex items-center gap-2 shrink-0">
-          {/* Active YouTube API v3 status indicator (Only when user explicitly turned it on in settings) */}
+          {/* Server Load Status Badge */}
+          <ServerStatusBadge />
+
+          {/* Proxy Health / Guide Modal Trigger */}
+          <button
+            onClick={() => setIsProxyModalOpen(true)}
+            className="p-2 text-neutral-400 hover:text-emerald-400 hover:bg-neutral-800 rounded-lg transition-colors cursor-pointer"
+            title="プロキシ管理 & GAS同期ガイド"
+            id="proxy-guide-btn"
+          >
+            <ShieldCheck className="w-4 h-4" />
+          </button>
+
+          {/* Stealth & Cloaking Settings (Tab Cloak, about:blank, Panic) */}
+          <button
+            onClick={() => setIsStealthModalOpen(true)}
+            className="p-2 text-neutral-400 hover:text-indigo-400 hover:bg-neutral-800 rounded-lg transition-colors cursor-pointer"
+            title="ステルス・クローキング設定 (タブ偽装・about:blank)"
+            id="stealth-cloak-btn"
+          >
+            <EyeOff className="w-4 h-4" />
+          </button>
+
+          {/* Emergency Panic Escape Button */}
+          <button
+            onClick={handleQuickPanic}
+            className="px-2 py-1 text-[11px] font-bold bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:border-amber-500/50 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+            title="緊急避難（クリックまたは設定したURLへ即座に退避）"
+            id="quick-panic-btn"
+          >
+            <AlertOctagon className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden xl:inline">避難</span>
+          </button>
+
+          {/* Return to Math Disguise Screen (Secondary / Camouflage) */}
+          {onLockDisguise && (
+            <button
+              onClick={onLockDisguise}
+              className="px-2 py-1 text-[11px] font-bold bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:border-blue-500/50 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+              title="二次方程式の解説（偽装学習画面）に戻る"
+              id="return-math-disguise-btn"
+            >
+              <Calculator className="w-3.5 h-3.5 text-blue-400" />
+              <span className="hidden sm:inline">数学画面に戻る</span>
+            </button>
+          )}
+
+          {/* Active YouTube API v3 status indicator */}
           {apiSettings.forceYoutubeV3 && (
             <button
               onClick={onDeactivateEmergencyV3}
@@ -222,28 +470,16 @@ export const Header: React.FC<HeaderProps> = ({
               <span>Edu</span>
             </button>
             <button
-              onClick={() => onTogglePlaybackMode('stream-normal')}
-              className={`px-2.5 py-1 rounded font-medium transition-colors flex items-center gap-1.5 ${
-                playbackMode === 'stream-normal'
-                  ? 'bg-rose-600 text-white font-bold shadow'
-                  : 'text-neutral-400 hover:text-neutral-200'
-              }`}
-              title="720p ストリーム（映像＋音声合体・推奨）"
-            >
-              <Film className="w-3.5 h-3.5" />
-              <span>720p</span>
-            </button>
-            <button
               onClick={() => onTogglePlaybackMode('stream-high')}
               className={`px-2.5 py-1 rounded font-medium transition-colors flex items-center gap-1.5 ${
                 playbackMode === 'stream-high'
                   ? 'bg-purple-600 text-white font-bold shadow'
                   : 'text-neutral-400 hover:text-neutral-200'
               }`}
-              title="1080p 高画質ストリーム（映像＋音声合体）"
+              title="1080p 合体ストリーム（映像と音声を別々取得して高画質合体）"
             >
               <Film className="w-3.5 h-3.5" />
-              <span>1080p</span>
+              <span>1080p 合体</span>
             </button>
             <button
               onClick={() => onTogglePlaybackMode('stream-360')}
@@ -252,7 +488,7 @@ export const Header: React.FC<HeaderProps> = ({
                   ? 'bg-amber-600 text-white font-bold shadow'
                   : 'text-neutral-400 hover:text-neutral-200'
               }`}
-              title="360p 低画質ストリーム（映像＋音声合体・軽量）"
+              title="360p 低画質ストリーム（軽量）"
             >
               <Film className="w-3.5 h-3.5" />
               <span>360p</span>
@@ -264,10 +500,10 @@ export const Header: React.FC<HeaderProps> = ({
                   ? 'bg-teal-600 text-white font-bold shadow'
                   : 'text-neutral-400 hover:text-neutral-200'
               }`}
-              title="音声のみ（オーディオストリーム）"
+              title="音声ストリーム（オーディオのみ）"
             >
               <Music className="w-3.5 h-3.5" />
-              <span>音声のみ</span>
+              <span>音声ストリーム</span>
             </button>
             <button
               onClick={() => onTogglePlaybackMode('nocookie')}
@@ -298,6 +534,24 @@ export const Header: React.FC<HeaderProps> = ({
               <option value="TW" className="bg-neutral-900">🇹🇼 TW</option>
             </select>
           </div>
+
+          {/* Quick Theme Toggle Button */}
+          <button
+            onClick={handleCycleTheme}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 hover:border-neutral-600 rounded-lg text-xs text-neutral-200 transition-colors font-medium cursor-pointer"
+            title={`テーマ切り替え: 現在「${currentTheme === 'system' ? 'デバイスに合わせる(OS追従)' : currentTheme === 'light' ? 'ライトモード' : 'ダークモード'}」`}
+          >
+            {currentTheme === 'system' ? (
+              <Laptop className="w-3.5 h-3.5 text-neutral-300" />
+            ) : currentTheme === 'light' ? (
+              <Sun className="w-3.5 h-3.5 text-amber-400" />
+            ) : (
+              <Moon className="w-3.5 h-3.5 text-purple-400" />
+            )}
+            <span className="hidden sm:inline font-mono text-[11px] text-neutral-300">
+              {currentTheme === 'system' ? 'OS連動' : currentTheme === 'light' ? 'ライト' : 'ダーク'}
+            </span>
+          </button>
 
           {/* API Settings Button */}
           <button
@@ -419,6 +673,18 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
       </div>
+
+      {/* Proxy Health & Integration Guide Modal */}
+      <ProxyGuideModal
+        isOpen={isProxyModalOpen}
+        onClose={() => setIsProxyModalOpen(false)}
+      />
+
+      {/* Stealth & Cloaking Modal */}
+      <StealthCloakModal
+        isOpen={isStealthModalOpen}
+        onClose={() => setIsStealthModalOpen(false)}
+      />
     </header>
   );
 };

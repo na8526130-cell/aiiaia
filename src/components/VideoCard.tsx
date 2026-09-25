@@ -6,19 +6,26 @@ import {
   MoreVertical,
   Check,
   ShieldCheck,
-  ShieldBan
+  ShieldBan,
+  Radio,
+  Clock
 } from 'lucide-react';
 import { YouTubeVideoItem } from '../types';
 import {
   formatViewCount,
   formatPublishedAt,
   formatISO8601Duration,
-  isShortVideo
+  isShortVideo,
+  formatPremiereDateJST,
+  formatWaitingCount,
+  isPremiereScheduled,
+  getPremiereScheduledTime
 } from '../utils/formatters';
 import { blockChannel } from '../utils/channelStorage';
 import { Zap } from 'lucide-react';
 import { ThumbnailImage } from './ThumbnailImage';
 import { AuthorAvatar } from './AuthorAvatar';
+import { ChannelBadge } from './ChannelBadge';
 import { getCachedChannelAvatar, fetchChannelAvatar } from '../utils/channelAvatarCache';
 
 
@@ -58,6 +65,16 @@ export const VideoCard: React.FC<VideoCardProps> = ({
   const viewCountStr = video.statistics?.viewCount;
   const publishedAtStr = snippet.publishedAt;
   const durationStr = formatISO8601Duration(video.contentDetails?.duration);
+
+  // Live / Premiere status
+  const isLive = Boolean(video.liveNow || snippet.liveBroadcastContent === 'live');
+  const isUpcoming = isPremiereScheduled(video);
+  const premiereTime = getPremiereScheduledTime(video);
+  const waitingCount =
+    (video as any).waiting ||
+    (video as any).concurrentViewers ||
+    (video as any).liveStreamingDetails?.concurrentViewers ||
+    (video as any).liveViewers;
 
   // Channel Avatar state & auto-fetch
   const initialAvatar =
@@ -116,11 +133,27 @@ export const VideoCard: React.FC<VideoCardProps> = ({
           </div>
         )}
 
-        {/* Shorts Badge only (No Education badge) */}
+        {/* Shorts Badge */}
         {isShortVideo(video) && (
           <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-rose-600 border border-rose-500 text-[10px] font-bold text-white flex items-center gap-1 shadow-md z-10">
             <Zap className="w-3 h-3 fill-white" />
             <span>Shorts</span>
+          </div>
+        )}
+
+        {/* Live Badge */}
+        {isLive && (
+          <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-rose-600 border border-rose-500 text-[10px] font-bold text-white flex items-center gap-1 shadow-md z-10">
+            <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+            <span>ライブ配信中</span>
+          </div>
+        )}
+
+        {/* Upcoming Premiere Badge */}
+        {!isLive && isUpcoming && (
+          <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/85 border border-amber-500/60 text-[10px] font-bold text-amber-300 flex items-center gap-1 shadow-md z-10">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+            <span>プレミア公開 • {formatWaitingCount(waitingCount)}</span>
           </div>
         )}
 
@@ -141,7 +174,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
                 e.stopPropagation();
                 if (channelId && onSelectChannel) onSelectChannel(channelId);
               }}
-              className="flex items-center gap-1.5 hover:text-white transition-colors truncate text-left"
+              className="flex items-center gap-1.5 hover:text-white transition-colors truncate text-left group/author"
             >
               <AuthorAvatar
                 src={avatarUrl}
@@ -150,6 +183,11 @@ export const VideoCard: React.FC<VideoCardProps> = ({
                 className="w-5 h-5 text-[10px]"
               />
               <span className="truncate font-medium">{channelTitle}</span>
+              <ChannelBadge
+                channelTitle={channelTitle}
+                isArtist={(video as any).isArtist || (video as any).authorMusic}
+                isVerified={(video as any).verified || (video as any).isVerified || (video as any).authorVerified}
+              />
             </button>
 
             {/* Menu */}
@@ -212,8 +250,30 @@ export const VideoCard: React.FC<VideoCardProps> = ({
 
         {/* Views & Date */}
         <div className="mt-2.5 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px] text-neutral-400">
-          <span>{formatViewCount(viewCountStr)}</span>
-          <span>{formatPublishedAt(publishedAtStr)}</span>
+          {isUpcoming ? (
+            <>
+              <span className="text-amber-400 font-medium flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                {formatWaitingCount(waitingCount)}
+              </span>
+              <span className="truncate max-w-[140px] text-right" title={`公開予定: ${formatPremiereDateJST(premiereTime)}`}>
+                公開予定: {formatPremiereDateJST(premiereTime)}
+              </span>
+            </>
+          ) : isLive ? (
+            <>
+              <span className="text-rose-400 font-medium flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                {waitingCount ? `${Number(waitingCount).toLocaleString()}人が視聴中` : 'ライブ配信中'}
+              </span>
+              <span>{formatPublishedAt(publishedAtStr)}</span>
+            </>
+          ) : (
+            <>
+              <span>{formatViewCount(viewCountStr)}</span>
+              <span>{formatPublishedAt(publishedAtStr)}</span>
+            </>
+          )}
         </div>
       </div>
     </div>

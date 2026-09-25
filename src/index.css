@@ -1,1 +1,179 @@
 @import "tailwindcss";
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #121212;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2a2a;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f3f;
+}
+
+/* Skeleton Loading Shimmer */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(90deg, #1e1e1e 25%, #2a2a2a 50%, #1e1e1e 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* CSS :has() Layout Enhancements */
+body:has(.fixed.inset-0) {
+  overflow: hidden;
+}
+
+/* Responsive and Smooth Scroll (Accessibility aware) */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Light Mode Theme Overrides */
+html[data-theme="light"],
+html:not(.dark) {
+  color-scheme: light;
+}
+
+html[data-theme="light"] body,
+html:not(.dark) body {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] ::-webkit-scrollbar-track,
+html:not(.dark) ::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+html[data-theme="light"] ::-webkit-scrollbar-thumb,
+html:not(.dark) ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+html[data-theme="light"] ::-webkit-scrollbar-thumb:hover,
+html:not(.dark) ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+html[data-theme="light"] .bg-neutral-950,
+html:not(.dark) .bg-neutral-950 {
+  background-color: #f8fafc !important;
+}
+
+html[data-theme="light"] .bg-neutral-950\/60,
+html:not(.dark) .bg-neutral-950\/60 {
+  background-color: rgba(248, 250, 252, 0.8) !important;
+}
+
+html[data-theme="light"] .bg-neutral-950\/80,
+html:not(.dark) .bg-neutral-950\/80 {
+  background-color: rgba(248, 250, 252, 0.9) !important;
+}
+
+html[data-theme="light"] .bg-neutral-900,
+html:not(.dark) .bg-neutral-900 {
+  background-color: #ffffff !important;
+}
+
+html[data-theme="light"] .bg-neutral-900\/80,
+html:not(.dark) .bg-neutral-900\/80 {
+  background-color: rgba(255, 255, 255, 0.9) !important;
+}
+
+html[data-theme="light"] .bg-neutral-900\/90,
+html:not(.dark) .bg-neutral-900\/90 {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+}
+
+html[data-theme="light"] .bg-neutral-800,
+html:not(.dark) .bg-neutral-800 {
+  background-color: #f1f5f9 !important;
+}
+
+html[data-theme="light"] .bg-neutral-800\/90,
+html:not(.dark) .bg-neutral-800\/90 {
+  background-color: #f1f5f9 !important;
+}
+
+html[data-theme="light"] .bg-neutral-800\/80,
+html:not(.dark) .bg-neutral-800\/80 {
+  background-color: #f1f5f9 !important;
+}
+
+html[data-theme="light"] .hover\:bg-neutral-800:hover,
+html:not(.dark) .hover\:bg-neutral-800:hover {
+  background-color: #e2e8f0 !important;
+}
+
+html[data-theme="light"] .hover\:bg-neutral-700:hover,
+html:not(.dark) .hover\:bg-neutral-700:hover {
+  background-color: #cbd5e1 !important;
+}
+
+html[data-theme="light"] .border-neutral-800,
+html:not(.dark) .border-neutral-800 {
+  border-color: #e2e8f0 !important;
+}
+
+html[data-theme="light"] .border-neutral-700,
+html:not(.dark) .border-neutral-700 {
+  border-color: #cbd5e1 !important;
+}
+
+html[data-theme="light"] .border-neutral-700\/80,
+html:not(.dark) .border-neutral-700\/80 {
+  border-color: #e2e8f0 !important;
+}
+
+html[data-theme="light"] .text-white,
+html:not(.dark) .text-white {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .text-neutral-100,
+html:not(.dark) .text-neutral-100 {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .text-neutral-200,
+html:not(.dark) .text-neutral-200 {
+  color: #1e293b !important;
+}
+
+html[data-theme="light"] .text-neutral-300,
+html:not(.dark) .text-neutral-300 {
+  color: #334155 !important;
+}
+
+html[data-theme="light"] .text-neutral-400,
+html:not(.dark) .text-neutral-400 {
+  color: #64748b !important;
+}
+
+html[data-theme="light"] .text-neutral-500,
+html:not(.dark) .text-neutral-500 {
+  color: #94a3b8 !important;
+}
+
+html[data-theme="light"] .skeleton-shimmer,
+html:not(.dark) .skeleton-shimmer {
+  background: linear-gradient(90deg, #e2e8f0 25%, #cbd5e1 50%, #e2e8f0 75%);
+  background-size: 200% 100%;
+}

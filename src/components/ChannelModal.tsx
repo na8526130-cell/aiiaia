@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   User,
   Video,
@@ -14,11 +14,21 @@ import {
   Film,
   Sparkles,
   ArrowUpDown,
-  Flame
+  Flame,
+  MessageSquare,
+  ListMusic,
+  Music,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Calendar,
+  Globe,
+  Copy
 } from 'lucide-react';
 import { YouTubeChannelItem, YouTubeVideoItem } from '../types';
 import { VideoCard } from './VideoCard';
 import { ThumbnailImage } from './ThumbnailImage';
+import { ChannelBadge } from './ChannelBadge';
 import { customFetch } from '../utils/apiClient';
 import {
   formatSubscriberCount,
@@ -53,12 +63,30 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
   const [channelData, setChannelData] = useState<YouTubeChannelItem | null>(null);
   const [channelVideos, setChannelVideos] = useState<YouTubeVideoItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'home' | 'videos' | 'shorts' | 'about'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'videos' | 'shorts' | 'community' | 'playlists' | 'about'>('home');
   const [videoSort, setVideoSort] = useState<'newest' | 'popular' | 'oldest'>('newest');
   const [videoFilter, setVideoFilter] = useState<'all' | 'normal' | 'shorts'>('all');
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [isDescExpanded, setIsDescExpanded] = useState(false);
+
+  // Playlists and Community State
+  const [playlists, setPlaylists] = useState<any[]>([]);
+  const [loadingPlaylists, setLoadingPlaylists] = useState(false);
+  const [selectedPlaylist, setSelectedPlaylist] = useState<{ id: string; title: string; videos: YouTubeVideoItem[] } | null>(null);
+  const [loadingPlaylistVideos, setLoadingPlaylistVideos] = useState(false);
+  const [communityPosts, setCommunityPosts] = useState<any[]>([]);
+  const [loadingCommunity, setLoadingCommunity] = useState(false);
+  const [copiedId, setCopiedId] = useState(false);
+  const [playlistShelfMode, setPlaylistShelfMode] = useState<'shelf' | 'grid'>('shelf');
+  const playlistShelfRef = useRef<HTMLDivElement>(null);
+
+  const scrollShelf = (direction: 'left' | 'right') => {
+    if (playlistShelfRef.current) {
+      const offset = direction === 'left' ? -380 : 380;
+      playlistShelfRef.current.scrollBy({ left: offset, behavior: 'smooth' });
+    }
+  };
 
   // Subscription & Block state
   const [isSubscribed, setIsSubscribed] = useState(false);
@@ -88,6 +116,32 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
         setLoading(false);
       });
   }, [channelId]);
+
+  useEffect(() => {
+    if (!channelId) return;
+
+    if (activeTab === 'playlists' && playlists.length === 0) {
+      setLoadingPlaylists(true);
+      customFetch(`/api/youtube/channel/playlists/${channelId}`)
+        .then((r) => r.json())
+        .then((data) => {
+          setPlaylists(data.items || []);
+          setLoadingPlaylists(false);
+        })
+        .catch(() => setLoadingPlaylists(false));
+    }
+
+    if (activeTab === 'community' && communityPosts.length === 0) {
+      setLoadingCommunity(true);
+      customFetch(`/api/youtube/channel/community/${channelId}`)
+        .then((r) => r.json())
+        .then((data) => {
+          setCommunityPosts(data.items || []);
+          setLoadingCommunity(false);
+        })
+        .catch(() => setLoadingCommunity(false));
+    }
+  }, [channelId, activeTab]);
 
   const handleLoadMore = async () => {
     if (!channelId || !nextPageToken || loadingMore) return;
@@ -231,8 +285,17 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
               <div className="flex-1 space-y-1.5 w-full">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <h1 className="text-xl sm:text-2xl font-bold text-white flex items-center justify-center sm:justify-start gap-2">
+                    <h1 className="text-xl sm:text-2xl font-bold text-white flex items-center justify-center sm:justify-start gap-2 flex-wrap">
                       <span>{snippet?.title || 'チャンネル'}</span>
+                      <ChannelBadge
+                        channelTitle={snippet?.title}
+                        isArtist={Boolean(
+                          snippet?.title?.toLowerCase().includes('vevo') ||
+                          snippet?.title?.toLowerCase().includes('topic') ||
+                          snippet?.customUrl?.toLowerCase().includes('topic')
+                        )}
+                        isVerified={true}
+                      />
                       {isBlocked && (
                         <span className="px-2 py-0.5 rounded-full bg-neutral-800 text-neutral-400 text-[10px] font-bold border border-neutral-700">
                           非表示中
@@ -349,6 +412,28 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                 <span className="px-1.5 py-0.2 rounded-full bg-neutral-800 text-[11px] text-neutral-300">
                   {shortVideos.length}
                 </span>
+              </button>
+              <button
+                onClick={() => setActiveTab('community')}
+                className={`py-3 border-b-2 whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 ${
+                  activeTab === 'community'
+                    ? 'border-rose-500 text-rose-400'
+                    : 'border-transparent text-neutral-400 hover:text-white'
+                }`}
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span>コミュニティ</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('playlists')}
+                className={`py-3 border-b-2 whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 ${
+                  activeTab === 'playlists'
+                    ? 'border-rose-500 text-rose-400'
+                    : 'border-transparent text-neutral-400 hover:text-white'
+                }`}
+              >
+                <ListMusic className="w-3.5 h-3.5" />
+                <span>再生リスト</span>
               </button>
               <button
                 onClick={() => setActiveTab('about')}
@@ -689,10 +774,317 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                 </div>
               )}
 
-              {/* 4. ABOUT TAB */}
+              {/* 4. COMMUNITY TAB */}
+              {activeTab === 'community' && (
+                <div className="space-y-4 max-w-3xl mx-auto">
+                  <div className="flex items-center gap-2 border-b border-neutral-800 pb-3">
+                    <MessageSquare className="w-4 h-4 text-rose-500" />
+                    <h3 className="font-bold text-base text-white">コミュニティ投稿</h3>
+                  </div>
+
+                  {loadingCommunity ? (
+                    <div className="py-16 text-center text-neutral-400 space-y-2">
+                      <div className="w-6 h-6 border-2 border-rose-500 border-t-transparent rounded-full animate-spin mx-auto" />
+                      <p className="text-xs">コミュニティ投稿を読み込んでいます...</p>
+                    </div>
+                  ) : communityPosts.length > 0 ? (
+                    <div className="space-y-4">
+                      {communityPosts.map((post: any, idx: number) => (
+                        <div key={post.id || idx} className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-3 shadow-md">
+                          <div className="flex items-center gap-2.5">
+                            {avatar && <img src={avatar} alt="" className="w-8 h-8 rounded-full object-cover" />}
+                            <div>
+                              <div className="text-xs font-bold text-white">{snippet?.title}</div>
+                              <div className="text-[10px] text-neutral-400">{post.publishedTimeText || '最近の投稿'}</div>
+                            </div>
+                          </div>
+                          <p className="text-xs text-neutral-200 leading-relaxed whitespace-pre-line">
+                            {post.contentText || post.snippet?.description || post.text || '（テキスト情報なし）'}
+                          </p>
+                          {post.attachmentImage && (
+                            <div className="rounded-lg overflow-hidden border border-neutral-800 max-h-80">
+                              <img src={post.attachmentImage} alt="" className="w-full object-contain" />
+                            </div>
+                          )}
+                          <div className="flex items-center gap-4 text-[11px] text-neutral-400 pt-1 border-t border-neutral-900">
+                            <span>👍 {post.voteCount || post.likes || 0}</span>
+                            <span>💬 {post.replyCount || 0} 件のコメント</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="py-16 text-center text-neutral-400 space-y-2">
+                      <MessageSquare className="w-8 h-8 text-neutral-600 mx-auto" />
+                      <p className="text-sm font-semibold">現在コミュニティ投稿はありません</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 5. PLAYLISTS TAB */}
+              {activeTab === 'playlists' && (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between border-b border-neutral-800 pb-3 gap-3">
+                    <div className="flex items-center gap-2">
+                      <ListMusic className="w-4 h-4 text-rose-500" />
+                      <h3 className="font-bold text-base text-white">
+                        {selectedPlaylist ? selectedPlaylist.title : '作成した再生リスト'}
+                      </h3>
+                      {!selectedPlaylist && playlists.length > 0 && (
+                        <span className="text-xs text-neutral-400">({playlists.length}件)</span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {selectedPlaylist ? (
+                        <button
+                          onClick={() => setSelectedPlaylist(null)}
+                          className="text-xs px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 transition-colors cursor-pointer"
+                        >
+                          ← 再生リスト一覧に戻る
+                        </button>
+                      ) : (
+                        playlists.length > 0 && (
+                          <div className="flex items-center gap-2">
+                            {/* Shelf / Grid Mode Toggle */}
+                            <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-lg p-0.5 text-xs">
+                              <button
+                                onClick={() => setPlaylistShelfMode('shelf')}
+                                className={`px-2.5 py-1 rounded font-medium transition-colors cursor-pointer ${
+                                  playlistShelfMode === 'shelf'
+                                    ? 'bg-neutral-800 text-white shadow-xs'
+                                    : 'text-neutral-400 hover:text-neutral-200'
+                                }`}
+                              >
+                                横スクロール棚
+                              </button>
+                              <button
+                                onClick={() => setPlaylistShelfMode('grid')}
+                                className={`px-2.5 py-1 rounded font-medium transition-colors cursor-pointer ${
+                                  playlistShelfMode === 'grid'
+                                    ? 'bg-neutral-800 text-white shadow-xs'
+                                    : 'text-neutral-400 hover:text-neutral-200'
+                                }`}
+                              >
+                                グリッド
+                              </button>
+                            </div>
+
+                            {/* Horizontal Scroll Buttons for Shelf */}
+                            {playlistShelfMode === 'shelf' && (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => scrollShelf('left')}
+                                  className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white transition-colors cursor-pointer border border-neutral-700"
+                                  title="左へスクロール"
+                                >
+                                  <ChevronLeft className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => scrollShelf('right')}
+                                  className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white transition-colors cursor-pointer border border-neutral-700"
+                                  title="右へスクロール"
+                                >
+                                  <ChevronRight className="w-4 h-4" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      )}
+                    </div>
+                  </div>
+
+                  {selectedPlaylist ? (
+                    <div>
+                      {loadingPlaylistVideos ? (
+                        <div className="py-16 text-center text-neutral-400 space-y-2">
+                          <div className="w-6 h-6 border-2 border-rose-500 border-t-transparent rounded-full animate-spin mx-auto" />
+                          <p className="text-xs">再生リストの動画を取得しています...</p>
+                        </div>
+                      ) : selectedPlaylist.videos.length > 0 ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                          {selectedPlaylist.videos.map((video) => (
+                            <VideoCard
+                              key={typeof video.id === 'string' ? video.id : video.id?.videoId}
+                              video={video}
+                              onSelect={() => {
+                                onSelectVideo(video);
+                                onClose();
+                              }}
+                              isSaved={isSaved}
+                              onToggleSave={() => onToggleSave(video)}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="py-16 text-center text-neutral-400 space-y-2">
+                          <p className="text-sm font-semibold">この再生リストには動画がありません</p>
+                        </div>
+                      )}
+                    </div>
+                  ) : loadingPlaylists ? (
+                    <div className="py-16 text-center text-neutral-400 space-y-2">
+                      <div className="w-6 h-6 border-2 border-rose-500 border-t-transparent rounded-full animate-spin mx-auto" />
+                      <p className="text-xs">再生リストを読み込んでいます...</p>
+                    </div>
+                  ) : playlists.length > 0 ? (
+                    playlistShelfMode === 'shelf' ? (
+                      /* Horizontal Shelf View with side buttons */
+                      <div className="relative group/shelf">
+                        <button
+                          onClick={() => scrollShelf('left')}
+                          className="absolute -left-2 sm:-left-4 top-1/2 -translate-y-1/2 z-20 w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-neutral-900/95 hover:bg-neutral-800 text-white border border-neutral-700 shadow-xl flex items-center justify-center transition-all cursor-pointer opacity-90 hover:opacity-100"
+                          title="左へスクロール"
+                        >
+                          <ChevronLeft className="w-5 h-5" />
+                        </button>
+
+                        <div
+                          ref={playlistShelfRef}
+                          className="flex gap-4 overflow-x-auto pb-4 pt-1 px-1 scroll-smooth no-scrollbar"
+                          style={{ scrollSnapType: 'x mandatory' }}
+                        >
+                          {playlists.map((pl: any, idx: number) => {
+                            const plId = pl.id || pl.playlistId || idx;
+                            const plTitle = pl.snippet?.title || pl.title || '再生リスト';
+                            const plThumb = pl.snippet?.thumbnails?.high?.url || pl.snippet?.thumbnails?.medium?.url || pl.thumbnail;
+                            const plCount = pl.contentDetails?.itemCount || pl.videoCount || 0;
+
+                            return (
+                              <div
+                                key={plId}
+                                className="w-64 sm:w-72 shrink-0 bg-neutral-950 border border-neutral-800 rounded-xl overflow-hidden hover:border-rose-500/50 transition-all group flex flex-col cursor-pointer shadow-md hover:shadow-lg"
+                                style={{ scrollSnapAlign: 'start' }}
+                                onClick={async () => {
+                                  if (!plId) return;
+                                  setLoadingPlaylistVideos(true);
+                                  setSelectedPlaylist({ id: String(plId), title: plTitle, videos: [] });
+                                  try {
+                                    const res = await customFetch(`/api/youtube/playlist/${plId}`);
+                                    const data = await res.json();
+                                    if (data.items && Array.isArray(data.items)) {
+                                      setSelectedPlaylist({
+                                        id: String(plId),
+                                        title: data.playlist?.snippet?.title || plTitle,
+                                        videos: data.items
+                                      });
+                                    }
+                                  } catch (err) {
+                                    console.error('Error fetching playlist videos:', err);
+                                  } finally {
+                                    setLoadingPlaylistVideos(false);
+                                  }
+                                }}
+                              >
+                                <div className="relative aspect-video bg-neutral-900 overflow-hidden">
+                                  {plThumb ? (
+                                    <img src={plThumb} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center text-neutral-500">
+                                      <ListMusic className="w-8 h-8" />
+                                    </div>
+                                  )}
+                                  <div className="absolute right-0 inset-y-0 w-24 bg-black/75 backdrop-blur-xs flex flex-col items-center justify-center text-white text-xs font-bold gap-1">
+                                    <ListMusic className="w-5 h-5 text-rose-400" />
+                                    <span>{plCount} 本</span>
+                                  </div>
+                                </div>
+                                <div className="p-3 space-y-1">
+                                  <h4 className="text-xs font-bold text-white line-clamp-2 leading-snug group-hover:text-rose-400 transition-colors">
+                                    {plTitle}
+                                  </h4>
+                                  <p className="text-[10px] text-neutral-400">
+                                    再生リストを表示（{plCount}本）
+                                  </p>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <button
+                          onClick={() => scrollShelf('right')}
+                          className="absolute -right-2 sm:-right-4 top-1/2 -translate-y-1/2 z-20 w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-neutral-900/95 hover:bg-neutral-800 text-white border border-neutral-700 shadow-xl flex items-center justify-center transition-all cursor-pointer opacity-90 hover:opacity-100"
+                          title="右へスクロール"
+                        >
+                          <ChevronRight className="w-5 h-5" />
+                        </button>
+                      </div>
+                    ) : (
+                      /* Grid View */
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                        {playlists.map((pl: any, idx: number) => {
+                          const plId = pl.id || pl.playlistId || idx;
+                          const plTitle = pl.snippet?.title || pl.title || '再生リスト';
+                          const plThumb = pl.snippet?.thumbnails?.high?.url || pl.snippet?.thumbnails?.medium?.url || pl.thumbnail;
+                          const plCount = pl.contentDetails?.itemCount || pl.videoCount || 0;
+
+                          return (
+                            <div
+                              key={plId}
+                              className="bg-neutral-950 border border-neutral-800 rounded-xl overflow-hidden hover:border-rose-500/50 transition-colors group flex flex-col cursor-pointer"
+                              onClick={async () => {
+                                if (!plId) return;
+                                setLoadingPlaylistVideos(true);
+                                setSelectedPlaylist({ id: String(plId), title: plTitle, videos: [] });
+                                try {
+                                  const res = await customFetch(`/api/youtube/playlist/${plId}`);
+                                  const data = await res.json();
+                                  if (data.items && Array.isArray(data.items)) {
+                                    setSelectedPlaylist({
+                                      id: String(plId),
+                                      title: data.playlist?.snippet?.title || plTitle,
+                                      videos: data.items
+                                    });
+                                  }
+                                } catch (err) {
+                                  console.error('Error fetching playlist videos:', err);
+                                } finally {
+                                  setLoadingPlaylistVideos(false);
+                                }
+                              }}
+                            >
+                              <div className="relative aspect-video bg-neutral-900 overflow-hidden">
+                                {plThumb ? (
+                                  <img src={plThumb} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-neutral-500">
+                                    <ListMusic className="w-8 h-8" />
+                                  </div>
+                                )}
+                                <div className="absolute right-0 inset-y-0 w-24 bg-black/75 backdrop-blur-xs flex flex-col items-center justify-center text-white text-xs font-bold gap-1">
+                                  <ListMusic className="w-5 h-5 text-rose-400" />
+                                  <span>{plCount} 本</span>
+                                </div>
+                              </div>
+                              <div className="p-3 space-y-1">
+                                <h4 className="text-xs font-bold text-white line-clamp-2 leading-snug group-hover:text-rose-400 transition-colors">
+                                  {plTitle}
+                                </h4>
+                                <p className="text-[10px] text-neutral-400">
+                                  再生リストを表示（{plCount}本）
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )
+                  ) : (
+                    <div className="py-16 text-center text-neutral-400 space-y-2">
+                      <ListMusic className="w-8 h-8 text-neutral-600 mx-auto" />
+                      <p className="text-sm font-semibold">公開されている再生リストはありません</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 6. ABOUT TAB */}
               {activeTab === 'about' && (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-sm">
-                  <div className="md:col-span-2 bg-neutral-950 p-5 rounded-2xl border border-neutral-800 space-y-3">
+                  <div className="md:col-span-2 bg-neutral-950 p-5 rounded-2xl border border-neutral-800 space-y-4">
                     <h3 className="font-bold text-white text-base">チャンネル説明</h3>
                     <p className="text-neutral-300 leading-relaxed whitespace-pre-line text-xs md:text-sm">
                       {snippet?.description || '説明欄のテキストはありません。'}
@@ -702,21 +1094,77 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                   <div className="bg-neutral-950 p-5 rounded-2xl border border-neutral-800 space-y-4">
                     <h3 className="font-bold text-white text-base">詳細ステータス</h3>
                     <dl className="space-y-3 text-xs text-neutral-300 divide-y divide-neutral-800/80">
-                      <div className="pt-2 flex justify-between">
-                        <dt className="text-neutral-400">チャンネル登録者</dt>
-                        <dd className="font-bold text-white">{formatSubscriberCount(statistics?.subscriberCount)}</dd>
+                      <div className="pt-2 flex justify-between items-center">
+                        <dt className="text-neutral-400 flex items-center gap-1.5">
+                          <Calendar className="w-3.5 h-3.5 text-rose-400" />
+                          <span>チャンネル開設日</span>
+                        </dt>
+                        <dd className="font-bold text-white">
+                          {snippet?.publishedAt
+                            ? new Date(snippet.publishedAt).toLocaleDateString('ja-JP', {
+                                year: 'numeric',
+                                month: 'long',
+                                day: 'numeric'
+                              })
+                            : '未公開'}
+                        </dd>
                       </div>
-                      <div className="pt-2 flex justify-between">
-                        <dt className="text-neutral-400">総視聴回数</dt>
+
+                      <div className="pt-2 flex justify-between items-center">
+                        <dt className="text-neutral-400 flex items-center gap-1.5">
+                          <Eye className="w-3.5 h-3.5 text-rose-400" />
+                          <span>総視聴回数</span>
+                        </dt>
                         <dd className="font-bold text-white">{formatViewCount(statistics?.viewCount)}</dd>
                       </div>
-                      <div className="pt-2 flex justify-between">
-                        <dt className="text-neutral-400">投稿動画数</dt>
+
+                      <div className="pt-2 flex justify-between items-center">
+                        <dt className="text-neutral-400 flex items-center gap-1.5">
+                          <Users className="w-3.5 h-3.5 text-rose-400" />
+                          <span>チャンネル登録者数</span>
+                        </dt>
+                        <dd className="font-bold text-white">{formatSubscriberCount(statistics?.subscriberCount)}</dd>
+                      </div>
+
+                      <div className="pt-2 flex justify-between items-center">
+                        <dt className="text-neutral-400 flex items-center gap-1.5">
+                          <Video className="w-3.5 h-3.5 text-rose-400" />
+                          <span>投稿動画数</span>
+                        </dt>
                         <dd className="font-bold text-white">{statistics?.videoCount || channelVideos.length} 本</dd>
                       </div>
-                      <div className="pt-2 flex justify-between">
+
+                      <div className="pt-2 flex justify-between items-center">
+                        <dt className="text-neutral-400 flex items-center gap-1.5">
+                          <Globe className="w-3.5 h-3.5 text-rose-400" />
+                          <span>国・地域</span>
+                        </dt>
+                        <dd className="font-bold text-white">{(snippet as any)?.country || '日本 (JP)'}</dd>
+                      </div>
+
+                      <div className="pt-2 flex justify-between items-center">
+                        <dt className="text-neutral-400">カスタムURL</dt>
+                        <dd className="font-semibold text-rose-400">{snippet?.customUrl || '-'}</dd>
+                      </div>
+
+                      <div className="pt-2 flex justify-between items-center">
                         <dt className="text-neutral-400">チャンネル ID</dt>
-                        <dd className="font-mono text-neutral-400 truncate max-w-[140px]">{channelId}</dd>
+                        <dd className="flex items-center gap-1.5">
+                          <span className="font-mono text-neutral-400 truncate max-w-[120px]">{channelId}</span>
+                          <button
+                            onClick={() => {
+                              if (channelId) {
+                                navigator.clipboard.writeText(channelId);
+                                setCopiedId(true);
+                                setTimeout(() => setCopiedId(false), 2000);
+                              }
+                            }}
+                            className="p-1 hover:bg-neutral-800 rounded text-neutral-400 hover:text-white transition-colors cursor-pointer"
+                            title="チャンネルIDをコピー"
+                          >
+                            {copiedId ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </dd>
                       </div>
                     </dl>
                   </div>

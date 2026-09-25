@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, X, Globe, Key, Check, RefreshCw, Server, Shield, Sparkles, Image as ImageIcon, Zap } from 'lucide-react';
+import { Settings, X, Globe, Key, Check, RefreshCw, Server, Shield, Sparkles, Image as ImageIcon, Zap, Sun, Moon, Laptop } from 'lucide-react';
 import { ApiSettings } from '../types';
 import { PRESET_INVIDIOUS_INSTANCES, DEFAULT_SETTINGS } from '../utils/apiClient';
 import {
@@ -8,24 +8,28 @@ import {
   isInvidiousThumbnailsEnabled,
   setInvidiousThumbnailsEnabled
 } from '../utils/thumbnail';
+import { getThemePreference, setThemePreference, ThemeMode } from '../utils/themeManager';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   settings: ApiSettings;
   onSaveSettings: (newSettings: ApiSettings) => void;
+  onOpenProxyGuide?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   settings,
-  onSaveSettings
+  onSaveSettings,
+  onOpenProxyGuide
 }) => {
   const [invidiousUrl, setInvidiousUrl] = useState<string>(settings.invidiousUrl || 'https://yt.omada.cafe/');
   const [youtubeApiKey, setYoutubeApiKey] = useState<string>(settings.youtubeApiKey || '');
   const [useBase64, setUseBase64] = useState<boolean>(isBase64ThumbnailsEnabled());
   const [useInvidiousThumb, setUseInvidiousThumb] = useState<boolean>(isInvidiousThumbnailsEnabled());
+  const [themeMode, setLocalThemeMode] = useState<ThemeMode>(() => getThemePreference());
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   if (!isOpen) return null;
@@ -46,6 +50,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     });
     setBase64ThumbnailsEnabled(useBase64);
     setInvidiousThumbnailsEnabled(useInvidiousThumb);
+    setThemePreference(themeMode);
     setSavedSuccess(true);
     setTimeout(() => {
       setSavedSuccess(false);
@@ -58,6 +63,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setYoutubeApiKey('');
     setUseBase64(true);
     setUseInvidiousThumb(true);
+    setLocalThemeMode('system');
+    setThemePreference('system');
   };
 
   return (
@@ -85,7 +92,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         {/* Modal Body */}
         <form onSubmit={handleSave} className="p-4 sm:p-6 overflow-y-auto space-y-6 flex-1 text-sm">
           {/* Status Indicator */}
-          <div className="space-y-2 p-3.5 bg-neutral-950/80 border border-neutral-800 rounded-xl">
+          <div className="space-y-2.5 p-3.5 bg-neutral-950/80 border border-neutral-800 rounded-xl">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-neutral-300 uppercase tracking-wider flex items-center gap-1.5">
                 <Server className="w-3.5 h-3.5 text-emerald-400" />
@@ -99,6 +106,87 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <p className="text-xs text-neutral-400 leading-relaxed">
               高速・高可用プロキシエンジン経由で動画、検索、急上昇、コメントが自動取得されています。
             </p>
+            {onOpenProxyGuide && (
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenProxyGuide();
+                  }}
+                  className="w-full px-3 py-2 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/30 text-emerald-300 rounded-lg text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                >
+                  <Zap className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Google Apps Script (GAS) 同期 & プロキシ設定を開く</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Theme Settings: デバイスに合わせる / ライトモード / ダークモード */}
+          <div className="space-y-3 bg-neutral-950/50 p-4 rounded-xl border border-neutral-800">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-neutral-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Sun className="w-3.5 h-3.5 text-amber-400" />
+                <span>カラーテーマ設定</span>
+              </label>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-neutral-800 text-neutral-300 border border-neutral-700">
+                {themeMode === 'system' ? 'OS連動（自動追従）' : themeMode === 'light' ? 'ライト' : 'ダーク'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setLocalThemeMode('system');
+                  setThemePreference('system');
+                }}
+                className={`p-3 rounded-xl border flex flex-col items-center justify-center gap-1.5 text-xs font-bold transition-all cursor-pointer ${
+                  themeMode === 'system'
+                    ? 'bg-rose-600/20 text-rose-300 border-rose-500 shadow-sm'
+                    : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:border-neutral-700 hover:text-white'
+                }`}
+              >
+                <Laptop className="w-4 h-4" />
+                <span className="text-[11px] text-center leading-tight">デバイスに合わせる</span>
+                <span className="text-[9px] text-neutral-500 font-normal">OS設定に自動追従</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setLocalThemeMode('light');
+                  setThemePreference('light');
+                }}
+                className={`p-3 rounded-xl border flex flex-col items-center justify-center gap-1.5 text-xs font-bold transition-all cursor-pointer ${
+                  themeMode === 'light'
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500 shadow-sm'
+                    : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:border-neutral-700 hover:text-white'
+                }`}
+              >
+                <Sun className="w-4 h-4 text-amber-400" />
+                <span className="text-[11px] text-center leading-tight">ライトモード</span>
+                <span className="text-[9px] text-neutral-500 font-normal">明るい背景</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setLocalThemeMode('dark');
+                  setThemePreference('dark');
+                }}
+                className={`p-3 rounded-xl border flex flex-col items-center justify-center gap-1.5 text-xs font-bold transition-all cursor-pointer ${
+                  themeMode === 'dark'
+                    ? 'bg-purple-500/20 text-purple-300 border-purple-500 shadow-sm'
+                    : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:border-neutral-700 hover:text-white'
+                }`}
+              >
+                <Moon className="w-4 h-4 text-purple-400" />
+                <span className="text-[11px] text-center leading-tight">ダークモード</span>
+                <span className="text-[9px] text-neutral-500 font-normal">暗い背景</span>
+              </button>
+            </div>
           </div>
 
           {/* Invidious Instance Config */}
