@@ -123,8 +123,28 @@ export function extractTimestamps(description?: string): DescriptionTimestamp[] 
   return results;
 }
 
-export function isShortVideo(video?: { snippet?: { title?: string; description?: string }; contentDetails?: { duration?: string } } | null): boolean {
+export function isShortVideo(video?: {
+  isShort?: boolean;
+  isPlaylist?: boolean;
+  kind?: string;
+  playlistId?: string;
+  snippet?: { title?: string; description?: string };
+  contentDetails?: { duration?: string };
+} | null): boolean {
   if (!video) return false;
+  if (video.isPlaylist || video.kind === 'youtube#playlist' || video.playlistId) {
+    return false;
+  }
+  if (video.isShort === true) {
+    return true;
+  }
+
+  const secs = video.contentDetails?.duration ? parseDurationToSeconds(video.contentDetails.duration) : 0;
+  // Videos over 3 minutes are never Shorts (e.g. compilation videos)
+  if (secs > 185) {
+    return false;
+  }
+
   const title = (video.snippet?.title || '').toLowerCase();
   const description = (video.snippet?.description || '').toLowerCase();
 
@@ -133,7 +153,6 @@ export function isShortVideo(video?: { snippet?: { title?: string; description?:
     title.includes('#shorts') ||
     title.includes('#short') ||
     title.includes('#ショート') ||
-    title.includes('shorts') ||
     description.includes('#shorts') ||
     description.includes('#short') ||
     description.includes('#ショート')
@@ -141,12 +160,9 @@ export function isShortVideo(video?: { snippet?: { title?: string; description?:
     return true;
   }
 
-  // Check duration if available (under 61 seconds)
-  if (video.contentDetails?.duration) {
-    const secs = parseDurationToSeconds(video.contentDetails.duration);
-    if (secs > 0 && secs <= 60) {
-      return true;
-    }
+  // Check duration if available (under 62 seconds)
+  if (secs > 0 && secs <= 62) {
+    return true;
   }
 
   return false;

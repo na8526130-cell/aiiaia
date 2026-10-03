@@ -1,4 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import {
+  fetchImageAsBase64,
+  getCachedBase64Thumbnail,
+  isBase64ThumbnailsEnabled
+} from '../utils/thumbnail';
 
 interface AuthorAvatarProps {
   src?: string;
@@ -34,16 +39,13 @@ function getAvatarColor(name: string): string {
 
 function getInitial(name: string): string {
   if (!name) return '?';
-  // Remove leading @ if present
   const clean = name.replace(/^@/, '').trim();
   if (!clean) return '?';
-  // Return first character (handles full-width Japanese and Latin)
   return clean.charAt(0).toUpperCase();
 }
 
 export function AuthorAvatar({ src, name = 'ユーザー', size = 'md', className = '' }: AuthorAvatarProps) {
   const [imgError, setImgError] = useState(false);
-  const [attemptProxy, setAttemptProxy] = useState(false);
 
   // Normalize image URL
   let validSrc = src?.trim();
@@ -57,6 +59,53 @@ export function AuthorAvatar({ src, name = 'ユーザー', size = 'md', classNam
     validSrc = 'https://yt3.ggpht.com' + validSrc.replace('/ggpht', '');
   }
 
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(() => {
+    if (!validSrc) return null;
+    if (validSrc.startsWith('data:')) return validSrc;
+    const cached = getCachedBase64Thumbnail(validSrc);
+    if (cached) return cached;
+    return isBase64ThumbnailsEnabled() ? null : validSrc;
+  });
+
+  useEffect(() => {
+    let isMounted = true;
+    setImgError(false);
+
+    if (!validSrc) {
+      setResolvedSrc(null);
+      return;
+    }
+
+    if (validSrc.startsWith('data:')) {
+      setResolvedSrc(validSrc);
+      return;
+    }
+
+    const cached = getCachedBase64Thumbnail(validSrc);
+    if (cached && cached.startsWith('data:')) {
+      setResolvedSrc(cached);
+      return;
+    }
+
+    if (isBase64ThumbnailsEnabled()) {
+      fetchImageAsBase64(validSrc).then((b64) => {
+        if (isMounted) {
+          if (b64 && b64.startsWith('data:')) {
+            setResolvedSrc(b64);
+          } else {
+            setResolvedSrc(validSrc || null);
+          }
+        }
+      });
+    } else {
+      setResolvedSrc(validSrc);
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [validSrc]);
+
   const sizeClasses = {
     sm: 'w-6 h-6 text-[10px]',
     md: 'w-8 h-8 text-xs',
@@ -66,7 +115,7 @@ export function AuthorAvatar({ src, name = 'ユーザー', size = 'md', classNam
   const bgColor = getAvatarColor(name);
   const initial = getInitial(name);
 
-  if (!validSrc || imgError) {
+  if (!validSrc || !resolvedSrc || imgError) {
     return (
       <div
         className={`${sizeClasses[size]} ${bgColor} rounded-full flex items-center justify-center font-bold text-white uppercase shrink-0 select-none shadow-sm ${className}`}
@@ -77,18 +126,20 @@ export function AuthorAvatar({ src, name = 'ユーザー', size = 'md', classNam
     );
   }
 
-  const effectiveSrc = attemptProxy
-    ? `/api/proxy/thumbnail?url=${encodeURIComponent(validSrc)}`
-    : validSrc;
-
   return (
     <img
-      src={effectiveSrc}
+      src={resolvedSrc}
       alt={name}
       referrerPolicy="no-referrer"
       onError={() => {
-        if (!attemptProxy && validSrc && !validSrc.startsWith('data:')) {
-          setAttemptProxy(true);
+        if (!resolvedSrc.startsWith('data:') && validSrc) {
+          fetchImageAsBase64(validSrc).then((b64) => {
+            if (b64 && b64.startsWith('data:')) {
+              setResolvedSrc(b64);
+            } else {
+              setImgError(true);
+            }
+          });
         } else {
           setImgError(true);
         }

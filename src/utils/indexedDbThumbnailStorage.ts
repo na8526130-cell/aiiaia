@@ -1,4 +1,4 @@
-// IndexedDB Image/Thumbnail Binary Cache (ArrayBuffer Storage for Offline Support)
+// IndexedDB Image/Thumbnail Cache (ArrayBuffer & Base64 Data URI Storage for Offline & Filter-Bypass Support)
 
 const DB_NAME = 'kaito_thumbnail_cache';
 const DB_VERSION = 1;
@@ -7,13 +7,14 @@ const STORE_NAME = 'thumbnails';
 interface CachedThumbnailRecord {
   key: string;
   videoId?: string;
-  buffer: ArrayBuffer;
+  buffer?: ArrayBuffer;
+  dataUri?: string;
   mimeType: string;
   savedAt: number;
 }
 
-// In-memory object URL cache to prevent repetitive URL.createObjectURL calls
-const memoryBlobUrls = new Map<string, string>();
+// In-memory Base64 Data URI cache for instant synchronous/asynchronous lookup
+const memoryBase64Urls = new Map<string, string>();
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -50,12 +51,35 @@ function getDB(): Promise<IDBDatabase> {
 }
 
 /**
- * Retrieve cached thumbnail from IndexedDB as a Blob Object URL
+ * Convert ArrayBuffer to Base64 Data URI (data:image/jpeg;base64,...)
+ */
+export function arrayBufferToBase64DataUri(buffer: ArrayBuffer, mimeType: string = 'image/jpeg'): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, Array.from(chunk));
+  }
+  const base64 = typeof btoa === 'function' ? btoa(binary) : '';
+  return `data:${mimeType || 'image/jpeg'};base64,${base64}`;
+}
+
+/**
+ * Synchronously check in-memory Base64 cache
+ */
+export function getMemoryCachedThumbnail(key: string): string | null {
+  if (!key) return null;
+  return memoryBase64Urls.get(key) || null;
+}
+
+/**
+ * Retrieve cached thumbnail from IndexedDB as a Base64 Data URI (data:image/...;base64,...)
  */
 export async function getThumbnailFromIndexedDB(key: string): Promise<string | null> {
   if (!key) return null;
-  if (memoryBlobUrls.has(key)) {
-    return memoryBlobUrls.get(key)!;
+  if (memoryBase64Urls.has(key)) {
+    return memoryBase64Urls.get(key)!;
   }
 
   try {
@@ -67,18 +91,27 @@ export async function getThumbnailFromIndexedDB(key: string): Promise<string | n
 
       req.onsuccess = () => {
         const record = req.result as CachedThumbnailRecord | undefined;
-        if (record && record.buffer) {
-          try {
-            const blob = new Blob([record.buffer], { type: record.mimeType || 'image/jpeg' });
-            const blobUrl = URL.createObjectURL(blob);
-            memoryBlobUrls.set(key, blobUrl);
-            resolve(blobUrl);
-          } catch {
-            resolve(null);
+        if (record) {
+          if (record.dataUri && record.dataUri.startsWith('data:')) {
+            memoryBase64Urls.set(key, record.dataUri);
+            if (record.videoId) memoryBase64Urls.set(record.videoId, record.dataUri);
+            resolve(record.dataUri);
+            return;
           }
-        } else {
-          resolve(null);
+          if (record.buffer) {
+            try {
+              const dataUri = arrayBufferToBase64DataUri(record.buffer, record.mimeType || 'image/jpeg');
+              memoryBase64Urls.set(key, dataUri);
+              if (record.videoId) memoryBase64Urls.set(record.videoId, dataUri);
+              resolve(dataUri);
+              return;
+            } catch {
+              resolve(null);
+              return;
+            }
+          }
         }
+        resolve(null);
       };
 
       req.onerror = () => resolve(null);
@@ -89,7 +122,7 @@ export async function getThumbnailFromIndexedDB(key: string): Promise<string | n
 }
 
 /**
- * Save image binary (ArrayBuffer) to IndexedDB
+ * Save image binary (ArrayBuffer) or Base64 Data URI to IndexedDB
  */
 export async function saveThumbnailToIndexedDB(
   key: string,
@@ -100,6 +133,10 @@ export async function saveThumbnailToIndexedDB(
   if (!key || !buffer) return;
 
   try {
+    const dataUri = arrayBufferToBase64DataUri(buffer, mimeType);
+    memoryBase64Urls.set(key, dataUri);
+    if (videoId) memoryBase64Urls.set(videoId, dataUri);
+
     const db = await getDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -108,6 +145,7 @@ export async function saveThumbnailToIndexedDB(
         key,
         videoId,
         buffer,
+        dataUri,
         mimeType,
         savedAt: Date.now()
       };
@@ -122,43 +160,79 @@ export async function saveThumbnailToIndexedDB(
 }
 
 /**
- * Fetch remote image as ArrayBuffer and store it into IndexedDB.
- * Returns Blob URL if successfully stored or retrieved.
+ * Save Base64 Data URI directly to IndexedDB
+ */
+export async function saveBase64ThumbnailToIndexedDB(
+  key: string,
+  dataUri: string,
+  videoId?: string
+): Promise<void> {
+  if (!key || !dataUri || !dataUri.startsWith('data:')) return;
+
+  memoryBase64Urls.set(key, dataUri);
+  if (videoId) memoryBase64Urls.set(videoId, dataUri);
+
+  try {
+    const db = await getDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const record: CachedThumbnailRecord = {
+        key,
+        videoId,
+        dataUri,
+        mimeType: 'image/jpeg',
+        savedAt: Date.now()
+      };
+      store.put(record);
+      if (videoId && videoId !== key) {
+        store.put({
+          ...record,
+          key: videoId
+        });
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  } catch {
+    // Ignore storage quota or private browsing errors
+  }
+}
+
+/**
+ * Fetch remote image and store it into IndexedDB as Base64 Data URI.
  */
 export async function cacheThumbnailFromUrl(
   url: string,
   videoId?: string
 ): Promise<string | null> {
-  if (!url || url.startsWith('data:') || url.startsWith('blob:')) return null;
+  if (!url) return null;
+  if (url.startsWith('data:')) return url;
+  if (url.startsWith('blob:')) return null;
 
-  // 1. Check if already in IndexedDB
-  const cachedUrl = await getThumbnailFromIndexedDB(url);
-  if (cachedUrl) {
-    return cachedUrl;
+  const cachedDataUri = await getThumbnailFromIndexedDB(url);
+  if (cachedDataUri && cachedDataUri.startsWith('data:')) {
+    return cachedDataUri;
   }
 
-  // 2. Fetch and convert to ArrayBuffer
   try {
     const response = await fetch(url, { mode: 'cors' });
-    if (!response.ok) return null;
-
-    const mimeType = response.headers.get('content-type') || 'image/jpeg';
-    const buffer = await response.arrayBuffer();
-
-    // 3. Save ArrayBuffer into IndexedDB
-    await saveThumbnailToIndexedDB(url, buffer, mimeType, videoId);
-
-    // 4. Return Blob URL
-    const blob = new Blob([buffer], { type: mimeType });
-    const blobUrl = URL.createObjectURL(blob);
-    memoryBlobUrls.set(url, blobUrl);
-    return blobUrl;
-  } catch (err) {
-    // Network may be offline - check if IndexedDB has videoId match
-    if (videoId) {
-      const fallback = await getThumbnailFromIndexedDB(videoId);
-      if (fallback) return fallback;
+    if (response.ok) {
+      const mimeType = response.headers.get('content-type') || 'image/jpeg';
+      const buffer = await response.arrayBuffer();
+      await saveThumbnailToIndexedDB(url, buffer, mimeType, videoId);
+      if (videoId) {
+        await saveThumbnailToIndexedDB(videoId, buffer, mimeType, videoId);
+      }
+      return memoryBase64Urls.get(url) || null;
     }
-    return null;
+  } catch {
+    // Fallback handled by fetchImageAsBase64 proxy
   }
+
+  if (videoId) {
+    const fallback = await getThumbnailFromIndexedDB(videoId);
+    if (fallback) return fallback;
+  }
+  return null;
 }

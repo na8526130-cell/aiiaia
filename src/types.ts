@@ -19,6 +19,8 @@ export interface YouTubeVideoSnippet {
   description: string;
   thumbnails: YouTubeThumbnails;
   channelTitle: string;
+  channelThumbnail?: string;
+  animatedThumbnailUrl?: string;
   tags?: string[];
   categoryId?: string;
   liveBroadcastContent?: string;
@@ -43,10 +45,25 @@ export interface YouTubeContentDetails {
   definition?: string;
   caption?: string;
   licensedContent?: boolean;
+  itemCount?: number;
 }
 
 export interface YouTubeVideoItem {
   id: string; // or object with videoId if search result
+  kind?: string;
+  isPlaylist?: boolean;
+  playlistId?: string;
+  firstVideoId?: string;
+  videoCountText?: string;
+  customPlaylistTitle?: string;
+  customPlaylistItems?: YouTubeVideoItem[];
+  watchedAt?: string;
+  isShort?: boolean;
+  liveNow?: boolean;
+  lengthSeconds?: number;
+  authorThumbnail?: string;
+  animatedThumbnailUrl?: string;
+  subscriberCount?: string;
   snippet: YouTubeVideoSnippet;
   statistics?: YouTubeVideoStatistics;
   contentDetails?: YouTubeContentDetails;
@@ -176,6 +193,13 @@ export interface UserCustomPlaylist {
   title: string;
   description: string;
   createdAt: string;
+  updatedAt?: string;
+  visibility?: 'public' | 'private';
+  isPublic?: boolean;
+  authorName?: string;
+  sharedId?: string;
+  cloneCount?: number;
+  sourcePlaylistId?: string;
   videos: YouTubeVideoItem[];
 }
 
@@ -185,8 +209,10 @@ export type PlaybackMode =
   | 'standard'
   | 'nocookie-origin'
   | 'embed-direct'
+  | 'stream-sync'
   | 'stream-normal'
   | 'stream-high'
+  | 'stream-ytdlp'
   | 'stream-360'
   | 'stream-audio'
   | 'normal'
@@ -214,15 +240,12 @@ export interface VideoStreamData {
 }
 
 export interface ApiSettings {
-  provider: 'innertube' | 'youtube' | 'invidious';
+  provider: 'innertube' | 'invidious';
   innertubeUrl?: string;
   invidiousUrl: string;
-  youtubeApiKey?: string;
-  customYoutubeApiKey?: string;
-  forceYoutubeV3?: boolean;
 }
 
-export type DisguisePreset = 'classroom' | 'docs' | 'nhk' | 'wikipedia';
+export type DisguisePreset = 'classroom';
 
 export interface DisguisePresetConfig {
   id: DisguisePreset;

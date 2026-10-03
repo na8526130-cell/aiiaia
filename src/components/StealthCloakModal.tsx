@@ -52,7 +52,25 @@ export const StealthCloakModal: React.FC<StealthCloakModalProps> = ({ isOpen, on
   const [panicUrl, setPanicUrl] = useState<string>(() => {
     return localStorage.getItem('kaito_panic_url') || 'https://classroom.google.com/';
   });
+  const [panicTarget, setPanicTarget] = useState<'study_portal' | 'lecture'>(() => {
+    return (localStorage.getItem('kaito_panic_target') as 'study_portal' | 'lecture') || 'study_portal';
+  });
+  const [autoLockOnBlur, setAutoLockOnBlur] = useState<boolean>(() => {
+    return localStorage.getItem('kaito_auto_lock_on_blur') === 'true';
+  });
   const [copied, setCopied] = useState(false);
+
+  const handleToggleAutoLock = (next: boolean) => {
+    setAutoLockOnBlur(next);
+    localStorage.setItem('kaito_auto_lock_on_blur', next ? 'true' : 'false');
+    window.dispatchEvent(new CustomEvent('kaito_stealth_settings_changed'));
+  };
+
+  const handleSelectPanicTarget = (target: 'study_portal' | 'lecture') => {
+    setPanicTarget(target);
+    localStorage.setItem('kaito_panic_target', target);
+    window.dispatchEvent(new CustomEvent('kaito_stealth_settings_changed'));
+  };
 
   // Apply tab cloaking
   const applyCloak = (presetId: string) => {
@@ -60,9 +78,9 @@ export const StealthCloakModal: React.FC<StealthCloakModalProps> = ({ isOpen, on
     localStorage.setItem('kaito_cloak_preset', presetId);
 
     if (presetId === 'default') {
-      document.title = '海斗tube - YouTube Client';
+      document.title = '数理アカデミー 学習ポータル';
       const link = document.querySelector("link[rel*='icon']") as HTMLLinkElement;
-      if (link) link.href = '/favicon.ico';
+      if (link) link.href = 'https://ssl.gstatic.com/classroom/favicon.png';
       return;
     }
 
@@ -235,38 +253,94 @@ export const StealthCloakModal: React.FC<StealthCloakModalProps> = ({ isOpen, on
                 onClick={() => applyCloak('default')}
                 className="text-xs text-neutral-400 hover:text-white underline cursor-pointer pt-1"
               >
-                デフォルト（海斗tube）の表示に戻す
+                デフォルトの表示に戻す
               </button>
             )}
           </div>
 
-          {/* 3. Panic Button Settings */}
+          {/* 3. Boss Key (Esc x2 / Alt+S) & Auto-Lock on Tab Leave */}
           <div className="bg-neutral-950 p-4 rounded-xl border border-neutral-800 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <AlertOctagon className="w-4 h-4 text-amber-400" />
                 <span className="font-bold text-white text-xs uppercase tracking-wider">
-                  緊急避難（パニックボタン）
+                  ボス来たキー（Esc 2回押し / Alt + S）＆ 自動ロック
                 </span>
               </div>
+              <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded border border-amber-500/30 font-semibold">
+                瞬間消音＆画面切替
+              </span>
             </div>
             <p className="text-xs text-neutral-400 leading-relaxed">
-              急に先生や保護者が来た時、ワンクリックで安全な学習サイトへ即座にページを差し替えます。
+              動画視聴中に <strong className="text-white">Escキーを素早く2回押す</strong> または <strong className="text-white">Alt + S</strong> を押すと、音声を即座にミュート・一時停止し、勉強サイトへ瞬時に切り替わります。
             </p>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={panicUrl}
-                onChange={(e) => handleSavePanicUrl(e.target.value)}
-                placeholder="https://classroom.google.com/"
-                className="flex-1 px-3 py-2 bg-neutral-900 border border-neutral-800 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
-              />
+
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-bold text-neutral-300">緊急回避時の遷移先画面：</div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => handleSelectPanicTarget('study_portal')}
+                  className={`p-2.5 rounded-lg border font-bold text-left cursor-pointer transition-colors ${
+                    panicTarget === 'study_portal'
+                      ? 'bg-emerald-950/50 border-emerald-500 text-emerald-300'
+                      : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white'
+                  }`}
+                >
+                  ① 全教科の問題演習画面（推奨）
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelectPanicTarget('lecture')}
+                  className={`p-2.5 rounded-lg border font-bold text-left cursor-pointer transition-colors ${
+                    panicTarget === 'lecture'
+                      ? 'bg-emerald-950/50 border-emerald-500 text-emerald-300'
+                      : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white'
+                  }`}
+                >
+                  ② 二次方程式の解説画面
+                </button>
+              </div>
+            </div>
+
+            {/* Auto-lock when leaving tab */}
+            <div className="flex items-center justify-between pt-2 border-t border-neutral-800">
+              <div className="pr-3">
+                <div className="text-xs font-bold text-white">タブを離れたら自動ロック（任意設定）</div>
+                <div className="text-[11px] text-neutral-400">
+                  別タブへの切替やウィンドウ最小化時に自動で音声を止めて勉強画面へ戻します
+                </div>
+              </div>
               <button
-                onClick={handlePanicEscape}
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg text-xs transition-colors shrink-0 cursor-pointer shadow"
+                type="button"
+                onClick={() => handleToggleAutoLock(!autoLockOnBlur)}
+                className={`px-3 py-1.5 rounded-lg font-bold text-xs cursor-pointer transition-colors shrink-0 ${
+                  autoLockOnBlur
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'
+                }`}
               >
-                今すぐ避難
+                {autoLockOnBlur ? 'ON（有効）' : 'OFF（無効）'}
               </button>
+            </div>
+
+            <div className="pt-2 border-t border-neutral-800 space-y-2">
+              <div className="text-[11px] text-neutral-400">外部サイトへ完全退避する場合のURL：</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={panicUrl}
+                  onChange={(e) => handleSavePanicUrl(e.target.value)}
+                  placeholder="https://classroom.google.com/"
+                  className="flex-1 px-3 py-2 bg-neutral-900 border border-neutral-800 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
+                />
+                <button
+                  onClick={handlePanicEscape}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg text-xs transition-colors shrink-0 cursor-pointer shadow"
+                >
+                  外部退避
+                </button>
+              </div>
             </div>
           </div>
         </div>

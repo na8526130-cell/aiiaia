@@ -1,94 +1,62 @@
 export type ThemeMode = 'system' | 'light' | 'dark';
 
-const THEME_STORAGE_KEY = 'kaito_theme_preference';
+const THEME_STORAGE_KEY = 'kaito_theme_mode';
 
-/**
- * Get the currently configured theme preference
- */
 export function getThemePreference(): ThemeMode {
   try {
-    const stored = localStorage.getItem(THEME_STORAGE_KEY);
-    if (stored === 'light' || stored === 'dark' || stored === 'system') {
-      return stored;
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    if (saved === 'light' || saved === 'dark' || saved === 'system') {
+      return saved;
     }
   } catch {}
-  return 'system';
+  return 'dark';
 }
 
-/**
- * Check if the effective theme should be dark based on preference and OS setting
- */
 export function isDarkThemeActive(mode: ThemeMode = getThemePreference()): boolean {
   if (mode === 'dark') return true;
   if (mode === 'light') return false;
-  // 'system'
   if (typeof window !== 'undefined' && window.matchMedia) {
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   }
-  return true; // default dark if unknown
+  return true;
 }
 
-/**
- * Apply the selected theme to documentElement
- */
-export function applyTheme(mode: ThemeMode): void {
+export function applyTheme(mode: ThemeMode = getThemePreference()): void {
   if (typeof document === 'undefined') return;
-
-  const isDark = isDarkThemeActive(mode);
   const root = document.documentElement;
-
-  root.classList.toggle('dark', isDark);
-  root.setAttribute('data-theme', isDark ? 'dark' : 'light');
-  root.style.colorScheme = isDark ? 'dark' : 'light';
+  const isDark = isDarkThemeActive(mode);
+  if (isDark) {
+    root.classList.add('dark');
+    root.classList.remove('light');
+    root.setAttribute('data-theme', 'dark');
+    root.style.colorScheme = 'dark';
+  } else {
+    root.classList.add('light');
+    root.classList.remove('dark');
+    root.setAttribute('data-theme', 'light');
+    root.style.colorScheme = 'light';
+  }
 }
 
-/**
- * Update and persist the theme preference
- */
 export function setThemePreference(mode: ThemeMode): void {
   try {
     localStorage.setItem(THEME_STORAGE_KEY, mode);
   } catch {}
-
   applyTheme(mode);
-  window.dispatchEvent(new CustomEvent('kaito_theme_changed', { detail: { mode } }));
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('kaito_theme_changed', { detail: { mode } }));
+  }
 }
 
-/**
- * Initialize theme listener for system OS changes and tab sync
- */
 export function initThemeListener(): () => void {
-  if (typeof window === 'undefined') return () => {};
-
-  // Apply initial theme
-  applyTheme(getThemePreference());
-
-  // Listen for OS color scheme change
-  const mediaQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-  const handleMediaChange = () => {
+  applyTheme();
+  if (typeof window === 'undefined' || !window.matchMedia) return () => {};
+  const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+  const listener = () => {
     if (getThemePreference() === 'system') {
       applyTheme('system');
-      window.dispatchEvent(new CustomEvent('kaito_theme_changed', { detail: { mode: 'system' } }));
     }
   };
-
-  if (mediaQuery && mediaQuery.addEventListener) {
-    mediaQuery.addEventListener('change', handleMediaChange);
-  }
-
-  // Listen for cross-tab storage changes
-  const handleStorage = (e: StorageEvent) => {
-    if (e.key === THEME_STORAGE_KEY && e.newValue) {
-      applyTheme(e.newValue as ThemeMode);
-      window.dispatchEvent(new CustomEvent('kaito_theme_changed', { detail: { mode: e.newValue } }));
-    }
-  };
-  window.addEventListener('storage', handleStorage);
-
-  return () => {
-    if (mediaQuery && mediaQuery.removeEventListener) {
-      mediaQuery.removeEventListener('change', handleMediaChange);
-    }
-    window.removeEventListener('storage', handleStorage);
-  };
+  mediaQuery.addEventListener('change', listener);
+  return () => mediaQuery.removeEventListener('change', listener);
 }

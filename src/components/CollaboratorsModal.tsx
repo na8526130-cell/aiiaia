@@ -87,12 +87,12 @@ export const CollaboratorsModal: React.FC<CollaboratorsModalProps> = ({
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-800 bg-neutral-950/80">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-neutral-800 text-neutral-300 border border-neutral-700 flex items-center justify-center">
               <Users className="w-4 h-4" />
             </div>
             <div>
               <h3 className="font-bold text-white text-base leading-tight">コラボレーター一覧</h3>
-              <p className="text-xs text-neutral-400">共同参加クリエイター・スタッフ情報</p>
+              <p className="text-xs text-neutral-400">共同参加クリエイター・スタッフ情報 (制作: 海斗)</p>
             </div>
           </div>
           <button
@@ -116,7 +116,7 @@ export const CollaboratorsModal: React.FC<CollaboratorsModalProps> = ({
                 <div>
                   <div className="flex items-center gap-1.5 font-bold text-white text-xs">
                     <span>{c.name}</span>
-                    {idx === 0 && <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />}
+                    {idx === 0 && <CheckCircle2 className="w-3.5 h-3.5 text-neutral-300" />}
                   </div>
                   <div className="text-[11px] text-neutral-400">{c.role}</div>
                 </div>
@@ -128,7 +128,7 @@ export const CollaboratorsModal: React.FC<CollaboratorsModalProps> = ({
                     onClose();
                     onSelectChannel(c.channelId!);
                   }}
-                  className="px-3 py-1.5 bg-neutral-800 hover:bg-indigo-600 text-white rounded-lg text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                  className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
                 >
                   <span>チャンネル</span>
                   <ExternalLink className="w-3 h-3" />

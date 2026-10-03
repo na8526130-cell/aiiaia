@@ -1,0 +1,6 @@
+name = "kaito-innertube-worker"
+main = "worker.js"
+compatibility_date = "2025-02-01"
+
+[observability]
+enabled = true

@@ -9,6 +9,8 @@
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist",
     "build:gas": "NODE_ENV=production vite build --mode production && node scripts/build-gas.cjs",
+    "postinstall": "node install-yt-dlp.js",
+    "setup:ytdlp": "node install-yt-dlp.js",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -18,9 +20,11 @@
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
+    "bgutils-js": "^4.0.3",
     "dotenv": "^17.2.3",
     "esbuild": "^0.25.0",
     "express": "^4.21.2",
+    "jsdom": "^30.1.1",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",
@@ -28,7 +32,8 @@
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "youtubei.js": "^18.1.0"
   },
   "devDependencies": {}
 }

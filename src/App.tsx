@@ -13,6 +13,7 @@ import { ShortcutsHelpModal } from './components/ShortcutsHelpModal';
 import { MinecraftVisitorCounter } from './components/MinecraftVisitorCounter';
 import { MathDisguiseView } from './components/MathDisguiseView';
 import { MiniFloatingPlayer } from './components/MiniFloatingPlayer';
+import { NiconicoView, extractNicoVideoId } from './components/NiconicoView';
 import {
   YouTubeVideoItem,
   YouTubeCategoryItem,
@@ -23,13 +24,32 @@ import {
 } from './types';
 import { isShortVideo, parseYouTubeUrl } from './utils/formatters';
 import { isChannelBlocked } from './utils/channelStorage';
-import { getApiSettings, saveApiSettings, customFetch, setEmergencyYoutubeV3 } from './utils/apiClient';
+import { getApiSettings, saveApiSettings, customFetch } from './utils/apiClient';
+import { prefetchStreamSources, fetchStreamSourcesCoalesced } from './utils/streamManager';
 import { initThemeListener } from './utils/themeManager';
-import { Flame, Play, ShieldCheck, AlertCircle, Zap, Settings, Users, ChevronDown, RefreshCw } from 'lucide-react';
+import {
+  addSearchHistory,
+  getVideoUniqueId,
+  syncPlaylistWithServer,
+  fetchSharedPlaylistByIdOrInput,
+  clonePlaylistToCustomPlaylists,
+  showGlobalToast
+} from './utils/userDataManager';
+import { loadDefaultPlaybackMode, saveDefaultPlaybackMode } from './utils/streamTypeCookie';
+import {
+  saveVideoToHistoryIDB,
+  loadAllHistoryFromIDB,
+  removeHistoryItemFromIDB,
+  clearAllHistoryFromIDB,
+  savePlaylistsToIDB,
+  loadPlaylistsFromIDB
+} from './utils/indexedDbStorage';
+import { Flame, Play, ShieldCheck, AlertCircle, Zap, Settings, Users, ChevronDown, RefreshCw, Check } from 'lucide-react';
 
 export default function App() {
   // Disguise & Gate State - Always lock on refresh as requested ("更新したら数学の画面なる")
   const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
+  const [openStudyPortalOnLock, setOpenStudyPortalOnLock] = useState<boolean>(false);
   const [disguiseTick, setDisguiseTick] = useState(0);
 
   useEffect(() => {
@@ -45,21 +65,40 @@ export default function App() {
   }, []);
 
   // Navigation & View States
+  const [platformMode, setPlatformModeState] = useState<'youtube' | 'niconico'>(() => {
+    try {
+      return localStorage.getItem('platform') === 'niconico' ? 'niconico' : 'youtube';
+    } catch {
+      return 'youtube';
+    }
+  });
+  const handleChangePlatformMode = (mode: 'youtube' | 'niconico') => {
+    setPlatformModeState(mode);
+    try {
+      localStorage.setItem('platform', mode);
+    } catch {}
+    if (mode === 'niconico') {
+      setIsDetailOpen(false);
+    }
+  };
   const [activeTab, setActiveTab] = useState<string>('home');
   const [selectedVideo, setSelectedVideo] = useState<YouTubeVideoItem | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState<boolean>(false);
   const [initialShortVideo, setInitialShortVideo] = useState<YouTubeVideoItem | null>(null);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
 
-  // Default to YouTube Education embedded player
-  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>('education');
+  // Default playback mode loaded from localStorage + 10-year Cookie (StreamType)
+  const [playbackMode, setPlaybackModeState] = useState<PlaybackMode>(() => loadDefaultPlaybackMode());
+  const setPlaybackMode = (mode: PlaybackMode) => {
+    setPlaybackModeState(mode);
+    saveDefaultPlaybackMode(mode);
+  };
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
 
-  // API Settings State & Emergency v3 availability
+  // API Settings State
   const [apiSettings, setApiSettings] = useState<ApiSettings>(() => getApiSettings());
-  const [emergencyV3Available, setEmergencyV3Available] = useState<boolean>(false);
 
   // History Guard (ヒストリーガード): 戻るボタンが押された際にYouTube履歴ではなく即座に偽装数学画面に直行させる
   useEffect(() => {
@@ -71,13 +110,97 @@ export default function App() {
 
       const handlePopState = () => {
         // ブラウザの戻るボタンが押されたら即座に偽装画面（ロック）へ直行！
+        document.querySelectorAll('video, audio').forEach((el: any) => {
+          try {
+            el.muted = true;
+            el.pause();
+          } catch {}
+        });
+        const target = localStorage.getItem('kaito_panic_target') || 'study_portal';
+        setOpenStudyPortalOnLock(target === 'study_portal');
         setIsUnlocked(false);
+        setSelectedVideo(null);
         setIsDetailOpen(false);
       };
 
       window.addEventListener('popstate', handlePopState);
       return () => window.removeEventListener('popstate', handlePopState);
     }
+  }, [isUnlocked]);
+
+  // Boss Key (Esc x2 or Alt+S) & Auto-Lock on Tab Leave (visibilitychange / blur)
+  useEffect(() => {
+    if (!isUnlocked) return;
+
+    const triggerInstantStealthLock = () => {
+      document.querySelectorAll('video, audio').forEach((el: any) => {
+        try {
+          el.muted = true;
+          el.pause();
+        } catch {}
+      });
+      const target = localStorage.getItem('kaito_panic_target') || 'study_portal';
+      setOpenStudyPortalOnLock(target === 'study_portal');
+      setIsUnlocked(false);
+      setSelectedVideo(null);
+      setIsDetailOpen(false);
+    };
+
+    let lastEscTime = 0;
+    const handlePanicKeyDown = (e: KeyboardEvent) => {
+      // Alt + S -> Instant Boss Key
+      if (e.altKey && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        triggerInstantStealthLock();
+        return;
+      }
+      // Esc pressed twice within 600ms -> Instant Boss Key
+      if (e.key === 'Escape') {
+        const now = Date.now();
+        if (now - lastEscTime < 600) {
+          e.preventDefault();
+          triggerInstantStealthLock();
+          lastEscTime = 0;
+          return;
+        }
+        lastEscTime = now;
+      }
+    };
+
+    const handleVisibilityOrBlur = () => {
+      try {
+        if (localStorage.getItem('kaito_auto_lock_on_blur') === 'true') {
+          if (document.hidden) {
+            triggerInstantStealthLock();
+          }
+        }
+      } catch {}
+    };
+
+    const handleWindowBlur = () => {
+      try {
+        if (localStorage.getItem('kaito_auto_lock_on_blur') === 'true') {
+          // Do not lock if focus moved to an iframe inside our own document
+          setTimeout(() => {
+            if (document.hidden || !document.hasFocus()) {
+              const activeTag = document.activeElement?.tagName?.toLowerCase();
+              if (activeTag !== 'iframe') {
+                triggerInstantStealthLock();
+              }
+            }
+          }, 150);
+        }
+      } catch {}
+    };
+
+    window.addEventListener('keydown', handlePanicKeyDown, true);
+    document.addEventListener('visibilitychange', handleVisibilityOrBlur);
+    window.addEventListener('blur', handleWindowBlur);
+    return () => {
+      window.removeEventListener('keydown', handlePanicKeyDown, true);
+      document.removeEventListener('visibilitychange', handleVisibilityOrBlur);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
   }, [isUnlocked]);
 
   // Synchronize Tab Title and Favicon based on Disguise / Unlock State
@@ -93,27 +216,6 @@ export default function App() {
     };
 
     if (!isUnlocked) {
-      // 偽装プリセットの反映
-      try {
-        const storedPreset = localStorage.getItem('kaito_disguise_preset');
-        if (storedPreset === 'classroom') {
-          document.title = 'ホーム - Google Classroom';
-          updateFavicon('https://ssl.gstatic.com/classroom/favicon.png');
-          return;
-        } else if (storedPreset === 'docs') {
-          document.title = '無題のドキュメント - Google ドキュメント';
-          updateFavicon('https://ssl.gstatic.com/docs/documents/images/kix-favicon7.ico');
-          return;
-        } else if (storedPreset === 'nhk') {
-          document.title = 'NHK for School - 学校放送学習ポータル';
-          updateFavicon('https://www.nhk.or.jp/favicon.ico');
-          return;
-        } else if (storedPreset === 'wikipedia') {
-          document.title = '二次方程式 - Wikipedia';
-          updateFavicon('https://en.wikipedia.org/static/favicon/wikipedia.ico');
-          return;
-        }
-      } catch {}
       document.title = '数理アカデミー 学習ポータル';
       updateFavicon('https://ssl.gstatic.com/classroom/favicon.png');
     } else {
@@ -127,8 +229,8 @@ export default function App() {
           return;
         }
       } catch {}
-      document.title = '海斗tube';
-      updateFavicon('/favicon.svg');
+      document.title = '数理アカデミー 学習ポータル';
+      updateFavicon('https://ssl.gstatic.com/classroom/favicon.png');
     }
   }, [isUnlocked, disguiseTick]);
 
@@ -152,6 +254,46 @@ export default function App() {
 
   // Blocked channels tracker
   const [blockedTick, setBlockedTick] = useState(0);
+  const [globalToast, setGlobalToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    let timer: any;
+    const handleToast = (e: any) => {
+      const msg = e.detail?.message;
+      if (msg) {
+        setGlobalToast(msg);
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => setGlobalToast(null), 3000);
+      }
+    };
+    const handlePlaylistsSync = (e: any) => {
+      if (e.detail) {
+        setCustomPlaylists(e.detail);
+      } else {
+        try {
+          const raw = localStorage.getItem('kaito_custom_playlists');
+          if (raw) setCustomPlaylists(JSON.parse(raw));
+        } catch {}
+      }
+    };
+    const handleBackupRestored = (e: any) => {
+      if (e.detail) {
+        if (e.detail.savedVideos) setSavedVideos(e.detail.savedVideos);
+        if (e.detail.watchHistory) setWatchHistory(e.detail.watchHistory);
+        if (e.detail.customPlaylists) setCustomPlaylists(e.detail.customPlaylists);
+      }
+    };
+
+    window.addEventListener('kaito_global_toast', handleToast);
+    window.addEventListener('kaito_custom_playlists_changed', handlePlaylistsSync);
+    window.addEventListener('kaito_backup_restored', handleBackupRestored);
+    return () => {
+      if (timer) clearTimeout(timer);
+      window.removeEventListener('kaito_global_toast', handleToast);
+      window.removeEventListener('kaito_custom_playlists_changed', handlePlaylistsSync);
+      window.removeEventListener('kaito_backup_restored', handleBackupRestored);
+    };
+  }, []);
 
   // Saved / History / Playlists (LocalStorage)
   const [savedVideos, setSavedVideos] = useState<YouTubeVideoItem[]>(() => {
@@ -181,6 +323,59 @@ export default function App() {
     }
   });
 
+  // Hydrate unlimited Watch History (VideoHistory DB) & Custom Playlists (PlaylistsDB) with ArrayBuffer thumbnails from IndexedDB
+  useEffect(() => {
+    loadAllHistoryFromIDB()
+      .then((idbHistory) => {
+        if (idbHistory && idbHistory.length > 0) {
+          setWatchHistory((prev) => {
+            const mergedMap = new Map<string, YouTubeVideoItem>();
+            for (const item of [...idbHistory, ...prev]) {
+              const id = getVideoUniqueId(item);
+              if (id && !mergedMap.has(id)) {
+                mergedMap.set(id, item);
+              }
+            }
+            return Array.from(mergedMap.values());
+          });
+        } else {
+          // Migrate existing localStorage history items into VideoHistory IndexedDB
+          try {
+            const raw = localStorage.getItem('kaito_watch_history');
+            const parsed: YouTubeVideoItem[] = raw ? JSON.parse(raw) : [];
+            for (const item of parsed.slice(0, 50)) {
+              saveVideoToHistoryIDB(item).catch(() => {});
+            }
+          } catch {}
+        }
+      })
+      .catch(() => {});
+
+    loadPlaylistsFromIDB()
+      .then((idbPlaylists) => {
+        if (idbPlaylists && idbPlaylists.length > 0) {
+          setCustomPlaylists((prev) => {
+            const plMap = new Map<string, UserCustomPlaylist>();
+            for (const pl of [...idbPlaylists, ...prev]) {
+              if (pl && pl.id && !plMap.has(pl.id)) {
+                plMap.set(pl.id, pl);
+              }
+            }
+            return Array.from(plMap.values());
+          });
+        } else {
+          try {
+            const raw = localStorage.getItem('kaito_custom_playlists');
+            const parsed: UserCustomPlaylist[] = raw ? JSON.parse(raw) : [];
+            if (parsed.length > 0) {
+              savePlaylistsToIDB(parsed).catch(() => {});
+            }
+          } catch {}
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   // Global keydown listener for shortcut help modal
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
@@ -206,25 +401,15 @@ export default function App() {
     };
   }, []);
 
-  // Listen to emergency v3 and settings change events
+  // Listen to settings change events
   useEffect(() => {
-    const handleEmergency = (e: any) => {
-      if (e.detail?.available !== undefined) {
-        setEmergencyV3Available(Boolean(e.detail.available));
-      }
-    };
     const handleSettingsChanged = (e: any) => {
       if (e.detail) {
         setApiSettings(e.detail);
-        if (e.detail.forceYoutubeV3) {
-          setEmergencyV3Available(false);
-        }
       }
     };
-    window.addEventListener('kaito_emergency_v3_available', handleEmergency);
     window.addEventListener('kaito_settings_changed', handleSettingsChanged);
     return () => {
-      window.removeEventListener('kaito_emergency_v3_available', handleEmergency);
       window.removeEventListener('kaito_settings_changed', handleSettingsChanged);
     };
   }, []);
@@ -287,15 +472,6 @@ export default function App() {
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
 
-  const handleActivateEmergencyV3 = () => {
-    setEmergencyYoutubeV3(true);
-    setEmergencyV3Available(false);
-  };
-
-  const handleDeactivateEmergencyV3 = () => {
-    setEmergencyYoutubeV3(false);
-  };
-
   // Save Settings handler
   const handleSaveSettings = (newSettings: ApiSettings) => {
     setApiSettings(newSettings);
@@ -314,7 +490,13 @@ export default function App() {
 
   // Fetch Main Videos depending on search query, active tab, or apiSettings
   useEffect(() => {
-    if (activeTab === 'categories' || activeTab === 'library' || activeTab === 'shorts' || activeTab === 'channels') {
+    if (
+      activeTab === 'categories' ||
+      activeTab === 'library' ||
+      activeTab === 'shorts' ||
+      activeTab === 'channels' ||
+      activeTab === 'subscriptions-feed'
+    ) {
       return;
     }
 
@@ -328,7 +510,7 @@ export default function App() {
         type: filters.type,
         videoDuration: filters.videoDuration,
         regionCode: filters.regionCode,
-        maxResults: '28'
+        maxResults: '48'
       });
       if (filters.categoryId) queryParams.set('videoCategoryId', filters.categoryId);
       if (filters.publishedAfter) queryParams.set('publishedAfter', filters.publishedAfter);
@@ -337,7 +519,7 @@ export default function App() {
       // Trending or Home
       const queryParams = new URLSearchParams({
         regionCode: filters.regionCode,
-        maxResults: '28'
+        maxResults: '48'
       });
       if (filters.categoryId) queryParams.set('videoCategoryId', filters.categoryId);
       apiUrl = `/api/youtube/trending?${queryParams.toString()}`;
@@ -379,7 +561,7 @@ export default function App() {
         type: filters.type,
         videoDuration: filters.videoDuration,
         regionCode: filters.regionCode,
-        maxResults: '28',
+        maxResults: '48',
         pageToken: feedNextPageToken
       });
       if (filters.categoryId) queryParams.set('videoCategoryId', filters.categoryId);
@@ -388,7 +570,7 @@ export default function App() {
     } else {
       const queryParams = new URLSearchParams({
         regionCode: filters.regionCode,
-        maxResults: '28',
+        maxResults: '48',
         pageToken: feedNextPageToken
       });
       if (filters.categoryId) queryParams.set('videoCategoryId', filters.categoryId);
@@ -400,9 +582,9 @@ export default function App() {
       .then((data) => {
         if (data.items && data.items.length > 0) {
           setRawVideos((prev) => {
-            const existingIds = new Set(prev.map((v) => typeof v.id === 'string' ? v.id : (v.id as any)?.videoId));
+            const existingIds = new Set(prev.map((v) => v.playlistId || (typeof v.id === 'string' ? v.id : (v.id as any)?.videoId || (v.id as any)?.playlistId)));
             const newItems = data.items.filter((v: any) => {
-              const id = typeof v.id === 'string' ? v.id : (v.id as any)?.videoId;
+              const id = v.playlistId || (typeof v.id === 'string' ? v.id : (v.id as any)?.videoId || (v.id as any)?.playlistId);
               return id && !existingIds.has(id);
             });
             return [...prev, ...newItems];
@@ -424,46 +606,76 @@ export default function App() {
   });
 
   // Handle Video Selection & Add to History
-  const handleSelectVideo = (video: YouTubeVideoItem) => {
-    if (isShortVideo(video)) {
+  const handleSelectVideo = (video: YouTubeVideoItem, keepMinimized = false) => {
+    try {
+      localStorage.setItem('yt_user_gesture_v1', '1');
+    } catch {}
+
+    const rawCandidateId =
+      typeof video.id === 'string' ? video.id : (video.id as any)?.videoId || '';
+    if (extractNicoVideoId(rawCandidateId)) {
+      handleChangePlatformMode('niconico');
+      setFilters((prev) => ({ ...prev, query: rawCandidateId }));
+      return;
+    }
+
+    const isPl = Boolean(
+      video.isPlaylist ||
+      video.kind === 'youtube#playlist' ||
+      video.playlistId ||
+      (video.customPlaylistItems && video.customPlaylistItems.length > 0)
+    );
+
+    const stayInDetailView = Boolean((video as any).fromWatchAutoplay || isDetailOpen || keepMinimized);
+
+    if (!isPl && !stayInDetailView && isShortVideo(video)) {
       setInitialShortVideo(video);
       setActiveTab('shorts');
       setSelectedVideo(null);
       setIsDetailOpen(false);
     } else {
       setSelectedVideo(video);
-      setIsDetailOpen(true);
+      if (!keepMinimized) {
+        setIsDetailOpen(true);
+      }
     }
 
-    const targetId = typeof video.id === 'string' ? video.id : (video.id as any)?.videoId;
+    const targetId =
+      video.firstVideoId ||
+      (typeof video.id === 'string' ? video.id : (video.id as any)?.videoId || (video.id as any)?.playlistId);
     if (!targetId) return;
 
+    // 1. Prioritize stream acquisition BEFORE any related videos or comments are fetched
+    const streamTargetId = video.firstVideoId || (!/^(PL|UU|FL|LP|RD|OLAK5uy_)/.test(targetId) ? targetId : '');
+    if (streamTargetId) {
+      prefetchStreamSources(streamTargetId);
+    }
+
+    const historyItem: YouTubeVideoItem = {
+      ...video,
+      watchedAt: new Date().toISOString()
+    };
+
     const updatedHistory = [
-      video,
+      historyItem,
       ...watchHistory.filter((v) => {
-        const id = typeof v.id === 'string' ? v.id : (v.id as any)?.videoId;
+        const id = getVideoUniqueId(v);
         return id !== targetId;
       })
-    ].slice(0, 50);
+    ];
 
     setWatchHistory(updatedHistory);
+    // Save unlimited history with ArrayBuffer binary thumbnail to IndexedDB (VideoHistory)
+    saveVideoToHistoryIDB(historyItem).catch(() => {});
     try {
-      localStorage.setItem('kaito_watch_history', JSON.stringify(updatedHistory));
+      // Keep compact 100-item mirror in localStorage so synchronous reads never exceed 5MB
+      localStorage.setItem('kaito_watch_history', JSON.stringify(updatedHistory.slice(0, 100)));
     } catch (e) {
       console.error(e);
     }
 
-    if (!isShortVideo(video)) {
-      // Fetch related videos for normal long-form videos with query fallback
-      const q = encodeURIComponent(video.snippet?.title || '');
-      const chId = encodeURIComponent(video.snippet?.channelId || '');
-      customFetch(`/api/youtube/related/${targetId}?q=${q}&channelId=${chId}`)
-        .then((res) => res.json())
-        .then((data) => {
-          setRelatedVideos((data.items || []).filter((r: YouTubeVideoItem) => !isChannelBlocked(r.snippet?.channelId || '')));
-        })
-        .catch((err) => console.error(err));
-    }
+    // Clear previous related videos; VideoDetailView fetches related videos & comments AFTER stream is acquired
+    setRelatedVideos([]);
   };
 
   // Toggle Save Video
@@ -504,6 +716,7 @@ export default function App() {
 
   const handleClearHistory = () => {
     setWatchHistory([]);
+    clearAllHistoryFromIDB().catch(() => {});
     try {
       localStorage.removeItem('kaito_watch_history');
     } catch (e) {
@@ -511,36 +724,123 @@ export default function App() {
     }
   };
 
-  const handleCreatePlaylist = (title: string, description: string) => {
+  const handleRemoveHistoryItem = (videoId: string) => {
+    const updated = watchHistory.filter((v) => getVideoUniqueId(v) !== videoId);
+    setWatchHistory(updated);
+    removeHistoryItemFromIDB(videoId).catch(() => {});
+    try {
+      localStorage.setItem('kaito_watch_history', JSON.stringify(updated.slice(0, 100)));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleCreatePlaylist = (
+    title: string,
+    description: string,
+    visibility: 'public' | 'private' = 'private',
+    authorName?: string
+  ) => {
     const newPl: UserCustomPlaylist = {
       id: Date.now().toString(),
       title,
       description,
       createdAt: new Date().toLocaleDateString('ja-JP'),
+      updatedAt: new Date().toLocaleDateString('ja-JP'),
+      visibility,
+      isPublic: visibility === 'public',
+      authorName: authorName || '海斗tube ユーザー',
       videos: []
     };
     const updated = [newPl, ...customPlaylists];
     setCustomPlaylists(updated);
+    savePlaylistsToIDB(updated).catch(() => {});
     try {
       localStorage.setItem('kaito_custom_playlists', JSON.stringify(updated));
     } catch (e) {
       console.error(e);
+    }
+    if (visibility === 'public') {
+      syncPlaylistWithServer(newPl).catch(() => {});
+      showGlobalToast(`公開プレイリスト「${title}」を作成しました`);
+    } else {
+      showGlobalToast(`非公開プレイリスト「${title}」を作成しました`);
     }
   };
 
   const handleDeletePlaylist = (id: string) => {
+    const target = customPlaylists.find((p) => p.id === id);
     const updated = customPlaylists.filter((p) => p.id !== id);
     setCustomPlaylists(updated);
+    savePlaylistsToIDB(updated).catch(() => {});
     try {
       localStorage.setItem('kaito_custom_playlists', JSON.stringify(updated));
     } catch (e) {
       console.error(e);
     }
+    if (target && (target.visibility === 'public' || target.isPublic)) {
+      syncPlaylistWithServer({ ...target, visibility: 'private', isPublic: false }).catch(() => {});
+    }
   };
+
+  // Handle shared_playlist URL query parameter on unlock
+  useEffect(() => {
+    if (!isUnlocked) return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const sharedId = params.get('shared_playlist');
+      const plToken = params.get('pl_token');
+      if (sharedId || plToken) {
+        fetchSharedPlaylistByIdOrInput(window.location.href).then((resolved) => {
+          if (resolved && resolved.videos && resolved.videos.length > 0) {
+            showGlobalToast(`共有プレイリスト「${resolved.title}」を読み込みました（再生画面から複製できます）`);
+            handleSelectVideo({
+              ...resolved.videos[0],
+              playlistId: `custom_${resolved.id}`,
+              customPlaylistTitle: resolved.title,
+              customPlaylistItems: resolved.videos
+            });
+          }
+        });
+      }
+    } catch {}
+  }, [isUnlocked]);
 
   const handleSearchSubmit = async (query: string) => {
     const trimmed = query.trim();
     if (!trimmed) return;
+
+    // Check if the input is a Niconico video ID (sm..., nm..., so...) or nicovideo.jp URL
+    const nicoId = extractNicoVideoId(trimmed);
+    if (nicoId || platformMode === 'niconico') {
+      if (nicoId && platformMode !== 'niconico') {
+        handleChangePlatformMode('niconico');
+      }
+      addSearchHistory(trimmed);
+      setFilters((prev) => ({ ...prev, query: trimmed }));
+      setIsDetailOpen(false);
+      return;
+    }
+
+    // Check if the input is a shared playlist URL (?shared_playlist=... or KAITO_PL:...)
+    if (trimmed.includes('shared_playlist=') || trimmed.includes('pl_token=') || trimmed.startsWith('KAITO_PL:')) {
+      const resolved = await fetchSharedPlaylistByIdOrInput(trimmed);
+      if (resolved) {
+        await clonePlaylistToCustomPlaylists(resolved);
+        if (resolved.videos && resolved.videos.length > 0) {
+          handleSelectVideo({
+            ...resolved.videos[0],
+            playlistId: `custom_${resolved.id}`,
+            customPlaylistTitle: resolved.title,
+            customPlaylistItems: resolved.videos
+          });
+        } else {
+          setActiveTab('library');
+          setIsDetailOpen(false);
+        }
+        return;
+      }
+    }
 
     // Check if the input is a YouTube URL (shorts, watch, youtu.be, embed, etc.)
     const parsed = parseYouTubeUrl(trimmed);
@@ -599,18 +899,23 @@ export default function App() {
 
       handleSelectVideo(tempVideo);
 
-      // Async fetch complete video metadata
-      customFetch(`/api/youtube/video/${parsed.videoId}`)
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.items && data.items[0]) {
-            handleSelectVideo(data.items[0]);
-          }
-        })
-        .catch(() => {});
+      // Fetch complete video metadata only AFTER stream sources are resolved
+      fetchStreamSourcesCoalesced(parsed.videoId)
+        .catch(() => {})
+        .finally(() => {
+          customFetch(`/api/youtube/video/${parsed.videoId}`)
+            .then((res) => res.json())
+            .then((data) => {
+              if (data.items && data.items[0]) {
+                handleSelectVideo(data.items[0]);
+              }
+            })
+            .catch(() => {});
+        });
       return;
     }
 
+    addSearchHistory(trimmed);
     setFilters((prev) => ({ ...prev, query: trimmed }));
     setActiveTab('home');
     setIsDetailOpen(false); // 検索中も動画は小窓・バックグラウンドで自動再生を維持
@@ -635,10 +940,19 @@ export default function App() {
     setIsUnlocked(true);
     try {
       sessionStorage.setItem('kaito_math_unlocked', 'true');
+      localStorage.setItem('yt_user_gesture_v1', '1');
     } catch {}
   };
 
   const handleLockDisguise = () => {
+    document.querySelectorAll('video, audio').forEach((el: any) => {
+      try {
+        el.muted = true;
+        el.pause();
+      } catch {}
+    });
+    const target = localStorage.getItem('kaito_panic_target') || 'study_portal';
+    setOpenStudyPortalOnLock(target === 'study_portal');
     setIsUnlocked(false);
     try {
       sessionStorage.removeItem('kaito_math_unlocked');
@@ -648,7 +962,12 @@ export default function App() {
 
   // If not unlocked, render the Quadratic Equation Educational Disguise Page
   if (!isUnlocked) {
-    return <MathDisguiseView onUnlock={handleUnlockMath} />;
+    return (
+      <MathDisguiseView
+        onUnlock={handleUnlockMath}
+        initialStudyPortalOpen={openStudyPortalOnLock}
+      />
+    );
   }
 
   return (
@@ -670,16 +989,31 @@ export default function App() {
         onTogglePlaybackMode={setPlaybackMode}
         savedCount={savedVideos.length}
         apiSettings={apiSettings}
-        emergencyV3Available={emergencyV3Available}
-        onActivateEmergencyV3={handleActivateEmergencyV3}
-        onDeactivateEmergencyV3={handleDeactivateEmergencyV3}
         onLockDisguise={handleLockDisguise}
+        platformMode={platformMode}
+        onChangePlatformMode={handleChangePlatformMode}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 pb-16">
-        {/* Render Selected Video Detail View if open */}
-        {selectedVideo && isDetailOpen ? (
+        {platformMode === 'niconico' ? (
+          <NiconicoView
+            externalQuery={filters.query}
+            onSelectSaveToMainHistory={(historyItem) => {
+              const targetId = getVideoUniqueId(historyItem);
+              const updatedHistory = [
+                { ...historyItem, watchedAt: new Date().toISOString() },
+                ...watchHistory.filter((v) => getVideoUniqueId(v) !== targetId)
+              ];
+              setWatchHistory(updatedHistory);
+              saveVideoToHistoryIDB({ ...historyItem, watchedAt: new Date().toISOString() }).catch(() => {});
+              try {
+                localStorage.setItem('kaito_watch_history', JSON.stringify(updatedHistory.slice(0, 100)));
+              } catch {}
+            }}
+            onSwitchToYouTubeMode={() => handleChangePlatformMode('youtube')}
+          />
+        ) : selectedVideo && isDetailOpen ? (
           <VideoDetailView
             video={selectedVideo}
             relatedVideos={relatedVideos}
@@ -702,10 +1036,21 @@ export default function App() {
             onClearInitialShort={() => setInitialShortVideo(null)}
             onBackToHome={() => setActiveTab('home')}
           />
+        ) : activeTab === 'subscriptions-feed' ? (
+          <ChannelsView
+            onSelectChannel={setSelectedChannelId}
+            onSelectVideo={handleSelectVideo}
+            initialSubTab="feed"
+            isVideoSaved={isVideoSaved}
+            onToggleSave={handleToggleSave}
+          />
         ) : activeTab === 'channels' ? (
           <ChannelsView
             onSelectChannel={setSelectedChannelId}
             onSelectVideo={handleSelectVideo}
+            initialSubTab="subscribed"
+            isVideoSaved={isVideoSaved}
+            onToggleSave={handleToggleSave}
           />
         ) : activeTab === 'categories' ? (
           <CategoryView
@@ -723,6 +1068,7 @@ export default function App() {
             onSelectChannel={setSelectedChannelId}
             onToggleSave={handleToggleSave}
             onClearHistory={handleClearHistory}
+            onRemoveHistoryItem={handleRemoveHistoryItem}
             onCreatePlaylist={handleCreatePlaylist}
             onDeletePlaylist={handleDeletePlaylist}
           />
@@ -749,7 +1095,7 @@ export default function App() {
                       : 'おすすめ動画'}
                   </h1>
                   <p className="text-xs text-neutral-400">
-                    高画質ストリーム & NoCookie 再生対応
+                    高画質ストリーム &amp; NoCookie 再生対応
                   </p>
                 </div>
               </div>
@@ -840,6 +1186,16 @@ export default function App() {
         )}
       </main>
 
+      {/* Global Feedback Toast */}
+      {globalToast && (
+        <div className="fixed bottom-6 left-6 z-50 bg-neutral-900/95 border border-rose-500/60 text-white px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 text-xs font-semibold animate-fade-in max-w-sm">
+          <div className="w-5 h-5 rounded-full bg-rose-600 text-white flex items-center justify-center shrink-0">
+            <Check className="w-3.5 h-3.5" />
+          </div>
+          <span>{globalToast}</span>
+        </div>
+      )}
+
       {/* Mini Floating Player for Background Continuous Playback (他の検索や操作中も次の動画が流れるまで自動バックグラウンド再生) */}
       {selectedVideo && !isDetailOpen && activeTab !== 'shorts' && (
         <MiniFloatingPlayer
@@ -850,11 +1206,66 @@ export default function App() {
             setSelectedVideo(null);
             setIsDetailOpen(false);
           }}
+          onEnded={() => {
+            const currentVid =
+              selectedVideo.firstVideoId ||
+              (typeof selectedVideo.id === 'string'
+                ? selectedVideo.id
+                : (selectedVideo.id as any)?.videoId || '');
+            const list = selectedVideo.customPlaylistItems;
+            if (list && list.length > 0) {
+              const idx = list.findIndex((it) => {
+                const id =
+                  typeof it.id === 'string'
+                    ? it.id
+                    : (it.id as any)?.videoId ||
+                      (it as any).snippet?.resourceId?.videoId ||
+                      (it as any).contentDetails?.videoId ||
+                      it.firstVideoId ||
+                      '';
+                return id === currentVid;
+              });
+              if (idx >= 0 && idx < list.length - 1) {
+                const nextItem = list[idx + 1];
+                const nextVid =
+                  typeof nextItem.id === 'string'
+                    ? nextItem.id
+                    : (nextItem.id as any)?.videoId ||
+                      (nextItem as any).snippet?.resourceId?.videoId ||
+                      (nextItem as any).contentDetails?.videoId ||
+                      nextItem.firstVideoId ||
+                      '';
+                handleSelectVideo(
+                  {
+                    ...nextItem,
+                    id: nextVid || nextItem.id,
+                    firstVideoId: nextVid,
+                    isPlaylist: false,
+                    kind: 'youtube#video',
+                    playlistId: selectedVideo.playlistId,
+                    customPlaylistItems: list,
+                    customPlaylistTitle: selectedVideo.customPlaylistTitle
+                  },
+                  true
+                );
+                return;
+              }
+            }
+            if (relatedVideos.length > 0) {
+              const nextRel = relatedVideos.find((r) => {
+                const rId = typeof r.id === 'string' ? r.id : (r.id as any)?.videoId;
+                return rId && rId !== currentVid;
+              });
+              if (nextRel) {
+                handleSelectVideo(nextRel, true);
+              }
+            }
+          }}
         />
       )}
 
       {/* Footer */}
-      <footer className="border-t border-neutral-800 bg-neutral-900 py-6 text-center text-xs text-neutral-400 space-y-3">
+      <footer className="border-t border-neutral-800/80 bg-neutral-900/40 py-6 text-center text-xs text-neutral-400 space-y-3">
         <div className="flex items-center justify-center gap-4 flex-wrap text-neutral-400 text-xs">
           <button
             onClick={() => setIsShortcutsModalOpen(true)}
@@ -871,16 +1282,16 @@ export default function App() {
           </button>
         </div>
 
-        {/* Minecraft-Themed Visitor Counter */}
+        {/* Visitor Counter */}
         <div className="flex items-center justify-center pt-1">
           <MinecraftVisitorCounter />
         </div>
 
-        <p className="font-semibold text-neutral-300">
-          海斗<span className="text-rose-500">tube</span> — YouTube Client & Education Embed
+        <p className="font-bold text-white text-sm">
+          海斗<span className="text-rose-500">tube</span> — 制作: 海斗
         </p>
-        <p className="text-[11px] text-neutral-500">
-          Powered by YouTube Data API v3, Education Embed Player & Gemini AI
+        <p className="text-[11px] text-neutral-400 font-medium">
+          Created &amp; Developed by 海斗
         </p>
       </footer>
 

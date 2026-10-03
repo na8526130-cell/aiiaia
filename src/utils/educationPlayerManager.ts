@@ -1,6 +1,6 @@
 /**
  * YouTube Education Player Engine & Dynamic Parameter Management
- * Compatible with siatube.com StreamType1 & Google Spreadsheet GViz Engine
+ * Compatible with Google Spreadsheet GViz Engine & Educational Stream
  */
 
 export interface SpreadsheetEduConfig {
@@ -25,9 +25,58 @@ let inMemoryConfig: SpreadsheetEduConfig | null = null;
 let inMemoryConfigTimestamp = 0;
 let widgetApiPromise: Promise<any> | null = null;
 
+export function normalizeEduParameter(
+  rawParam: string,
+  options: { autoplay?: boolean; start?: number; origin?: string } = {}
+): string {
+  const normalizedParameterText = String(rawParam || '')
+    .trim()
+    .replace(/&amp;/gi, '&')
+    .replace(/&#0*38;/gi, '&')
+    .replace(/&#x0*26;/gi, '&')
+    .replace(/^\?/, '');
+
+  const params = new URLSearchParams(
+    normalizedParameterText ||
+      'enablejsapi=1&rel=0&controls=1&showinfo=0&start=0&autoplay=1&playsinline=1&cc_load_policy=0&errorlinks=1&hl=ja&authuser=0&modestbranding=1'
+  );
+  params.set('enablejsapi', '1');
+  params.set('controls', '1');
+  params.set('playsinline', '1');
+  params.set('autoplay', options.autoplay === false ? '0' : '1');
+  if (typeof options.start === 'number' && options.start > 0) {
+    params.set('start', String(Math.floor(options.start)));
+  }
+  if (!params.has('widgetid')) {
+    params.set('widgetid', '1');
+  }
+  if (
+    typeof window !== 'undefined' &&
+    (window.location.protocol === 'http:' || window.location.protocol === 'https:')
+  ) {
+    if (!params.has('origin') && !params.has('embed_config')) {
+      params.set('origin', options.origin || window.location.origin);
+    }
+    if (!params.has('forigin') && !params.has('embed_config')) {
+      params.set('forigin', window.location.href);
+    }
+  }
+  return `?${params.toString()}`;
+}
+
+export function createYoutubeEducationEmbedUrl(
+  videoId: string,
+  parameterText: string,
+  options: { autoplay?: boolean; start?: number; origin?: string } = {}
+): string {
+  const cleanId = encodeURIComponent(String(videoId || '').trim());
+  const query = normalizeEduParameter(parameterText, options);
+  return `https://www.youtubeeducation.com/embed/${cleanId}${query}`;
+}
+
 /**
  * 1. Fetch YouTube Education Embed URL from Backend API
- * Request to /api/stream/youtubeeducation/{videoId}?origin=siatube
+ * Request to /api/stream/youtubeeducation/{videoId}
  */
 export async function fetchEducationStreamUrl(videoId: string): Promise<string> {
   const cleanId = String(videoId || '').trim();
@@ -37,14 +86,20 @@ export async function fetchEducationStreamUrl(videoId: string): Promise<string> 
 
   // Try backend endpoint first
   try {
-    const res = await fetch(`/api/stream/youtubeeducation/${encodeURIComponent(cleanId)}?origin=siatube`, {
+    const res = await fetch(`/api/stream/youtubeeducation/${encodeURIComponent(cleanId)}?origin=kaitotube`, {
       cache: 'no-store'
     });
     if (res.ok) {
       const data = await res.json();
       const streamUrl = typeof data === 'string' ? data : data?.url;
       if (typeof streamUrl === 'string' && streamUrl.trim()) {
-        const safeUrl = streamUrl.trim().replace('youtube-nocookie.com', 'youtubeeducation.com');
+        let safeUrl = streamUrl.trim().replace('youtube-nocookie.com', 'youtubeeducation.com');
+        const qIdx = safeUrl.indexOf('?');
+        if (qIdx >= 0) {
+          safeUrl = safeUrl.slice(0, qIdx) + normalizeEduParameter(safeUrl.slice(qIdx));
+        } else {
+          safeUrl = safeUrl + normalizeEduParameter('');
+        }
         return safeUrl;
       }
     }
@@ -55,10 +110,10 @@ export async function fetchEducationStreamUrl(videoId: string): Promise<string> 
   // Fallback: build embed URL using dynamic spreadsheet parameter
   try {
     const config = await fetchSpreadsheetEducationConfig();
-    const param = config.parameterText || '?enablejsapi=1&rel=0&control=1&showinfo=0&start=0&autoplay=0&cc_load_policy=0&errorlinks=1&hl=ja&authuser=0&modestbranding=1';
-    return `https://www.youtubeeducation.com/embed/${cleanId}${param.startsWith('?') ? param : '?' + param}`;
+    const param = normalizeEduParameter(config.parameterText);
+    return `https://www.youtubeeducation.com/embed/${cleanId}${param}`;
   } catch {
-    const defaultParam = '?enablejsapi=1&rel=0&control=1&showinfo=0&start=0&autoplay=0&cc_load_policy=0&errorlinks=1&hl=ja&authuser=0&modestbranding=1';
+    const defaultParam = normalizeEduParameter('');
     return `https://www.youtubeeducation.com/embed/${cleanId}${defaultParam}`;
   }
 }
@@ -85,7 +140,10 @@ export async function fetchSpreadsheetEducationConfig(forceRefresh = false): Pro
 
   // Check in-memory cache
   if (!forceRefresh && inMemoryConfig && now - inMemoryConfigTimestamp < CACHE_TTL) {
-    return inMemoryConfig;
+    return {
+      ...inMemoryConfig,
+      parameterText: normalizeEduParameter(inMemoryConfig.parameterText)
+    };
   }
 
   // Check localStorage cache
@@ -95,7 +153,10 @@ export async function fetchSpreadsheetEducationConfig(forceRefresh = false): Pro
       if (cachedStr) {
         const parsed = JSON.parse(cachedStr);
         if (parsed && parsed.timestamp && now - parsed.timestamp < CACHE_TTL && parsed.config) {
-          inMemoryConfig = parsed.config;
+          inMemoryConfig = {
+            ...parsed.config,
+            parameterText: normalizeEduParameter(parsed.config.parameterText)
+          };
           inMemoryConfigTimestamp = parsed.timestamp;
           return inMemoryConfig;
         }
@@ -137,9 +198,7 @@ export async function fetchSpreadsheetEducationConfig(forceRefresh = false): Pro
       throw new Error('スプレッドシートのA2にPlayer APIコードがありません');
     }
 
-    if (!paramText.startsWith('?')) {
-      paramText = '?' + paramText;
-    }
+    paramText = normalizeEduParameter(paramText);
 
     const result: SpreadsheetEduConfig = {
       parameterText: paramText,
@@ -169,7 +228,7 @@ export async function fetchSpreadsheetEducationConfig(forceRefresh = false): Pro
         const data = await res.json();
         if (data.param) {
           const fallbackConfig: SpreadsheetEduConfig = {
-            parameterText: data.param,
+            parameterText: normalizeEduParameter(data.param),
             widgetApiSource: data.widgetApiSource || ''
           };
           return fallbackConfig;

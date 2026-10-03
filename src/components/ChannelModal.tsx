@@ -23,7 +23,8 @@ import {
   ChevronRight,
   Calendar,
   Globe,
-  Copy
+  Copy,
+  Shuffle
 } from 'lucide-react';
 import { YouTubeChannelItem, YouTubeVideoItem } from '../types';
 import { VideoCard } from './VideoCard';
@@ -62,6 +63,8 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
 }) => {
   const [channelData, setChannelData] = useState<YouTubeChannelItem | null>(null);
   const [channelVideos, setChannelVideos] = useState<YouTubeVideoItem[]>([]);
+  const [channelShorts, setChannelShorts] = useState<YouTubeVideoItem[]>([]);
+  const [loadingShorts, setLoadingShorts] = useState(false);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'home' | 'videos' | 'shorts' | 'community' | 'playlists' | 'about'>('home');
   const [videoSort, setVideoSort] = useState<'newest' | 'popular' | 'oldest'>('newest');
@@ -95,13 +98,30 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
   useEffect(() => {
     if (!channelId) return;
     setLoading(true);
+    setPlaylists([]);
+    setSelectedPlaylist(null);
+    setChannelShorts([]);
+    setCommunityPosts([]);
+    setActiveTab('home');
 
     setIsSubscribed(isChannelSubscribed(channelId));
     setIsBlocked(isChannelBlocked(channelId));
 
+    // Eagerly fetch channel playlists so the tab count badge & home shelf are immediately ready
+    setLoadingPlaylists(true);
+    customFetch(`/api/youtube/channel/playlists/${channelId}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && Array.isArray(data.items)) {
+          setPlaylists(data.items);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingPlaylists(false));
+
     Promise.all([
       customFetch(`/api/youtube/channel/${channelId}`).then((r) => r.json()),
-      customFetch(`/api/youtube/channel/videos/${channelId}?maxResults=50`).then((r) => r.json())
+      customFetch(`/api/youtube/channel/videos/${channelId}?maxResults=500&fetchAll=1`).then((r) => r.json())
     ])
       .then(([chanRes, vidsRes]) => {
         if (chanRes.items?.[0]) setChannelData(chanRes.items[0]);
@@ -117,10 +137,76 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
       });
   }, [channelId]);
 
+  // Automatically fetch remaining pages in background if nextPageToken exists so all channel videos are loaded
+  useEffect(() => {
+    if (!channelId || !nextPageToken || loading || loadingMore) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      if (cancelled) return;
+      setLoadingMore(true);
+      try {
+        const res = await customFetch(
+          `/api/youtube/channel/videos/${channelId}?maxResults=500&fetchAll=1&pageToken=${encodeURIComponent(nextPageToken)}`
+        );
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.items && data.items.length > 0) {
+          setChannelVideos((prev) => {
+            const existingIds = new Set(
+              prev.map((v) => (typeof v.id === 'string' ? v.id : (v.id as any)?.videoId))
+            );
+            const newItems = data.items.filter((v: any) => {
+              const id = typeof v.id === 'string' ? v.id : (v.id as any)?.videoId;
+              return id && !existingIds.has(id);
+            });
+            return [...prev, ...newItems];
+          });
+          setNextPageToken(data.nextPageToken || null);
+        } else {
+          setNextPageToken(null);
+        }
+      } catch {
+        // Stop auto-pagination on error; user can still click manual load more
+      } finally {
+        if (!cancelled) setLoadingMore(false);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [channelId, nextPageToken, loading, loadingMore]);
+
+  const handleOpenPlaylist = async (pl: any) => {
+    const plId = pl.id || pl.playlistId;
+    if (!plId) return;
+    const plTitle = pl.snippet?.title || pl.title || '再生リスト';
+    const firstVid = pl.firstVideoId || '';
+    setActiveTab('playlists');
+    setLoadingPlaylistVideos(true);
+    setSelectedPlaylist({ id: String(plId), title: plTitle, videos: [] });
+    try {
+      const seedQuery = firstVid ? `?videoId=${encodeURIComponent(firstVid)}` : '';
+      const res = await customFetch(`/api/youtube/playlist/${encodeURIComponent(String(plId))}${seedQuery}`);
+      const data = await res.json();
+      if (data.items && Array.isArray(data.items)) {
+        setSelectedPlaylist({
+          id: String(plId),
+          title: data.playlist?.snippet?.title || plTitle,
+          videos: data.items
+        });
+      }
+    } catch (err) {
+      console.error('Error fetching playlist videos:', err);
+    } finally {
+      setLoadingPlaylistVideos(false);
+    }
+  };
+
   useEffect(() => {
     if (!channelId) return;
 
-    if (activeTab === 'playlists' && playlists.length === 0) {
+    if (activeTab === 'playlists' && playlists.length === 0 && !loadingPlaylists) {
       setLoadingPlaylists(true);
       customFetch(`/api/youtube/channel/playlists/${channelId}`)
         .then((r) => r.json())
@@ -141,7 +227,21 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
         })
         .catch(() => setLoadingCommunity(false));
     }
-  }, [channelId, activeTab]);
+
+    if ((activeTab === 'shorts' || activeTab === 'home') && channelShorts.length === 0) {
+      setLoadingShorts(true);
+      const chTitle = channelData?.snippet?.title || '';
+      customFetch(`/api/youtube/channel/shorts/${channelId}?title=${encodeURIComponent(chTitle)}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.items && data.items.length > 0) {
+            setChannelShorts(data.items);
+          }
+          setLoadingShorts(false);
+        })
+        .catch(() => setLoadingShorts(false));
+    }
+  }, [channelId, activeTab, channelData?.snippet?.title]);
 
   const handleLoadMore = async () => {
     if (!channelId || !nextPageToken || loadingMore) return;
@@ -216,9 +316,18 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
   const avatar = snippet?.thumbnails?.high?.url || snippet?.thumbnails?.medium?.url;
   const banner = branding?.image?.bannerExternalUrl || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80';
 
-  // Accurate classification using formatters.isShortVideo
+  // Accurate classification using formatters.isShortVideo & channelShorts (XeroxYT-NTv6)
   const normalVideos = channelVideos.filter((v) => !isShortVideo(v));
-  const shortVideos = channelVideos.filter((v) => isShortVideo(v));
+  const combinedShortsMap = new Map<string, YouTubeVideoItem>();
+  channelShorts.forEach((v) => {
+    const id = typeof v.id === 'string' ? v.id : (v.id as any)?.videoId;
+    if (id) combinedShortsMap.set(id, v);
+  });
+  channelVideos.filter(isShortVideo).forEach((v) => {
+    const id = typeof v.id === 'string' ? v.id : (v.id as any)?.videoId;
+    if (id && !combinedShortsMap.has(id)) combinedShortsMap.set(id, v);
+  });
+  const shortVideos = Array.from(combinedShortsMap.values());
 
   // Filter and sort for the Videos tab
   const displayedVideos = channelVideos.filter((v) => {
@@ -268,7 +377,7 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
           <div className="flex-1 flex flex-col">
             {/* Hero Channel Banner */}
             <div className="relative h-32 sm:h-48 w-full bg-neutral-950 overflow-hidden shrink-0">
-              <img src={banner} alt="" className="w-full h-full object-cover" />
+              <ThumbnailImage fallbackUrl={banner} alt="" className="w-full h-full object-cover" />
               <div className="absolute inset-0 bg-gradient-to-t from-neutral-900 via-transparent to-transparent" />
             </div>
 
@@ -276,7 +385,7 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
             <div className="px-6 pb-4 pt-2 -mt-10 relative z-10 flex flex-col sm:flex-row items-center sm:items-end gap-5 text-center sm:text-left border-b border-neutral-800/80">
               <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-neutral-950 border-4 border-neutral-900 shadow-xl overflow-hidden shrink-0">
                 {avatar ? (
-                  <img src={avatar} alt="" className="w-full h-full object-cover" />
+                  <ThumbnailImage fallbackUrl={avatar} alt="" className="w-full h-full object-cover" />
                 ) : (
                   <User className="w-12 h-12 text-neutral-400 m-auto" />
                 )}
@@ -425,7 +534,10 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                 <span>コミュニティ</span>
               </button>
               <button
-                onClick={() => setActiveTab('playlists')}
+                onClick={() => {
+                  setActiveTab('playlists');
+                  setSelectedPlaylist(null);
+                }}
                 className={`py-3 border-b-2 whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 ${
                   activeTab === 'playlists'
                     ? 'border-rose-500 text-rose-400'
@@ -434,6 +546,11 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
               >
                 <ListMusic className="w-3.5 h-3.5" />
                 <span>再生リスト</span>
+                {playlists.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-neutral-800 text-[11px] text-neutral-300">
+                    {playlists.length}
+                  </span>
+                )}
               </button>
               <button
                 onClick={() => setActiveTab('about')}
@@ -595,7 +712,70 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                     </div>
                   )}
 
-                  {normalVideos.length === 0 && shortVideos.length === 0 && (
+                  {/* Playlists Section on Home Tab */}
+                  {playlists.length > 0 && (
+                    <div className="space-y-4 pt-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <ListMusic className="w-4 h-4 text-rose-400" />
+                          <h3 className="font-bold text-base text-white">作成した再生リスト・リリース</h3>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setActiveTab('playlists');
+                            setSelectedPlaylist(null);
+                          }}
+                          className="text-xs font-bold text-rose-400 hover:underline cursor-pointer"
+                        >
+                          再生リスト一覧 ({playlists.length}件) →
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                        {playlists.slice(0, 4).map((pl: any, idx: number) => {
+                          const plId = pl.id || pl.playlistId || idx;
+                          const plTitle = pl.snippet?.title || pl.title || '再生リスト';
+                          const plThumb = pl.snippet?.thumbnails?.high?.url || pl.snippet?.thumbnails?.medium?.url || pl.thumbnail;
+                          const plCount = pl.contentDetails?.itemCount || pl.videoCount || 0;
+                          return (
+                            <div
+                              key={plId}
+                              onClick={() => handleOpenPlaylist(pl)}
+                              className="bg-neutral-950 border border-neutral-800 rounded-xl overflow-hidden hover:border-rose-500/50 transition-all group flex flex-col cursor-pointer shadow-md"
+                            >
+                              <div className="relative aspect-video bg-neutral-900 overflow-hidden">
+                                {plThumb ? (
+                                  <ThumbnailImage
+                                    video={pl}
+                                    fallbackUrl={plThumb}
+                                    alt=""
+                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-neutral-500">
+                                    <ListMusic className="w-8 h-8" />
+                                  </div>
+                                )}
+                                <div className="absolute right-0 inset-y-0 w-24 bg-black/75 backdrop-blur-xs flex flex-col items-center justify-center text-white text-xs font-bold gap-1">
+                                  <ListMusic className="w-5 h-5 text-rose-400" />
+                                  <span>{plCount > 0 ? `${plCount} 本` : '再生リスト'}</span>
+                                </div>
+                              </div>
+                              <div className="p-3 space-y-1">
+                                <h4 className="text-xs font-bold text-white line-clamp-2 leading-snug group-hover:text-rose-400 transition-colors">
+                                  {plTitle}
+                                </h4>
+                                <p className="text-[10px] text-neutral-400">
+                                  クリックして再生リストを開く
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {normalVideos.length === 0 && shortVideos.length === 0 && playlists.length === 0 && (
                     <div className="py-12 text-center text-neutral-500 text-sm">
                       動画が見つかりませんでした。
                     </div>
@@ -641,38 +821,80 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                       </button>
                     </div>
 
-                    {/* Sort Options */}
-                    <div className="flex items-center gap-1.5 bg-neutral-950 p-1 rounded-xl border border-neutral-800 text-xs">
-                      <button
-                        onClick={() => setVideoSort('newest')}
-                        className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
-                          videoSort === 'newest'
-                            ? 'bg-rose-600 text-white'
-                            : 'text-neutral-400 hover:text-white'
-                        }`}
-                      >
-                        最新順
-                      </button>
-                      <button
-                        onClick={() => setVideoSort('popular')}
-                        className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
-                          videoSort === 'popular'
-                            ? 'bg-rose-600 text-white'
-                            : 'text-neutral-400 hover:text-white'
-                        }`}
-                      >
-                        人気順 (再生数)
-                      </button>
-                      <button
-                        onClick={() => setVideoSort('oldest')}
-                        className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
-                          videoSort === 'oldest'
-                            ? 'bg-rose-600 text-white'
-                            : 'text-neutral-400 hover:text-white'
-                        }`}
-                      >
-                        古い順
-                      </button>
+                    {/* Sort Options & Play All / Shuffle All */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {sortedDisplayedVideos.length > 0 && (
+                        <div className="flex items-center gap-1.5 text-xs">
+                          <button
+                            onClick={() => {
+                              const first = sortedDisplayedVideos[0];
+                              onSelectVideo({
+                                ...first,
+                                customPlaylistItems: sortedDisplayedVideos,
+                                customPlaylistTitle: `${snippet?.title || 'チャンネル'} - 動画一覧`
+                              });
+                              onClose();
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow"
+                          >
+                            <Play className="w-3.5 h-3.5 fill-white" />
+                            <span>すべて再生 ({sortedDisplayedVideos.length}本)</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              const shuffled = [...sortedDisplayedVideos];
+                              for (let i = shuffled.length - 1; i > 0; i--) {
+                                const j = Math.floor(Math.random() * (i + 1));
+                                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+                              }
+                              const first = shuffled[0];
+                              onSelectVideo({
+                                ...first,
+                                customPlaylistItems: shuffled,
+                                customPlaylistTitle: `${snippet?.title || 'チャンネル'} (シャッフル)`
+                              });
+                              onClose();
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow"
+                          >
+                            <Shuffle className="w-3.5 h-3.5" />
+                            <span>シャッフル</span>
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-1.5 bg-neutral-950 p-1 rounded-xl border border-neutral-800 text-xs">
+                        <button
+                          onClick={() => setVideoSort('newest')}
+                          className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
+                            videoSort === 'newest'
+                              ? 'bg-rose-600 text-white'
+                              : 'text-neutral-400 hover:text-white'
+                          }`}
+                        >
+                          最新順
+                        </button>
+                        <button
+                          onClick={() => setVideoSort('popular')}
+                          className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
+                            videoSort === 'popular'
+                              ? 'bg-rose-600 text-white'
+                              : 'text-neutral-400 hover:text-white'
+                          }`}
+                        >
+                          人気順 (再生数)
+                        </button>
+                        <button
+                          onClick={() => setVideoSort('oldest')}
+                          className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
+                            videoSort === 'oldest'
+                              ? 'bg-rose-600 text-white'
+                              : 'text-neutral-400 hover:text-white'
+                          }`}
+                        >
+                          古い順
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -684,7 +906,16 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                             key={typeof v.id === 'string' ? v.id : (v.id as any)?.videoId || Math.random().toString()}
                             video={v}
                             onSelectVideo={(sel) => {
-                              onSelectVideo(sel);
+                              const vid = typeof sel.id === 'string' ? sel.id : (sel.id as any)?.videoId || '';
+                              onSelectVideo({
+                                ...sel,
+                                id: vid || sel.id,
+                                firstVideoId: vid || sel.firstVideoId,
+                                isPlaylist: false,
+                                kind: 'youtube#video',
+                                customPlaylistItems: sortedDisplayedVideos,
+                                customPlaylistTitle: `${snippet?.title || 'チャンネル'} - 動画一覧`
+                              });
                               onClose();
                             }}
                             isSaved={isSaved}
@@ -792,7 +1023,7 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                       {communityPosts.map((post: any, idx: number) => (
                         <div key={post.id || idx} className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-3 shadow-md">
                           <div className="flex items-center gap-2.5">
-                            {avatar && <img src={avatar} alt="" className="w-8 h-8 rounded-full object-cover" />}
+                            {avatar && <ThumbnailImage fallbackUrl={avatar} alt="" className="w-8 h-8 rounded-full object-cover" />}
                             <div>
                               <div className="text-xs font-bold text-white">{snippet?.title}</div>
                               <div className="text-[10px] text-neutral-400">{post.publishedTimeText || '最近の投稿'}</div>
@@ -803,7 +1034,7 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                           </p>
                           {post.attachmentImage && (
                             <div className="rounded-lg overflow-hidden border border-neutral-800 max-h-80">
-                              <img src={post.attachmentImage} alt="" className="w-full object-contain" />
+                              <ThumbnailImage fallbackUrl={post.attachmentImage} alt="" className="w-full object-contain" />
                             </div>
                           )}
                           <div className="flex items-center gap-4 text-[11px] text-neutral-400 pt-1 border-t border-neutral-900">
@@ -836,14 +1067,57 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       {selectedPlaylist ? (
-                        <button
-                          onClick={() => setSelectedPlaylist(null)}
-                          className="text-xs px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 transition-colors cursor-pointer"
-                        >
-                          ← 再生リスト一覧に戻る
-                        </button>
+                        <>
+                          {selectedPlaylist.videos.length > 0 && (
+                            <>
+                              <button
+                                onClick={() => {
+                                  const first = selectedPlaylist.videos[0];
+                                  onSelectVideo({
+                                    ...first,
+                                    playlistId: selectedPlaylist.id,
+                                    customPlaylistItems: selectedPlaylist.videos,
+                                    customPlaylistTitle: selectedPlaylist.title
+                                  });
+                                  onClose();
+                                }}
+                                className="text-xs px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold transition-colors cursor-pointer flex items-center gap-1.5 shadow"
+                              >
+                                <Play className="w-3.5 h-3.5 fill-white" />
+                                <span>すべて再生 ({selectedPlaylist.videos.length}本)</span>
+                              </button>
+                              <button
+                                onClick={() => {
+                                  const shuffled = [...selectedPlaylist.videos];
+                                  for (let i = shuffled.length - 1; i > 0; i--) {
+                                    const j = Math.floor(Math.random() * (i + 1));
+                                    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+                                  }
+                                  const first = shuffled[0];
+                                  onSelectVideo({
+                                    ...first,
+                                    playlistId: selectedPlaylist.id,
+                                    customPlaylistItems: shuffled,
+                                    customPlaylistTitle: `${selectedPlaylist.title} (シャッフル)`
+                                  });
+                                  onClose();
+                                }}
+                                className="text-xs px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold transition-colors cursor-pointer flex items-center gap-1.5 shadow"
+                              >
+                                <Shuffle className="w-3.5 h-3.5" />
+                                <span>シャッフル再生</span>
+                              </button>
+                            </>
+                          )}
+                          <button
+                            onClick={() => setSelectedPlaylist(null)}
+                            className="text-xs px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 transition-colors cursor-pointer"
+                          >
+                            ← 再生リスト一覧に戻る
+                          </button>
+                        </>
                       ) : (
                         playlists.length > 0 && (
                           <div className="flex items-center gap-2">
@@ -905,18 +1179,37 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                         </div>
                       ) : selectedPlaylist.videos.length > 0 ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                          {selectedPlaylist.videos.map((video) => (
-                            <VideoCard
-                              key={typeof video.id === 'string' ? video.id : video.id?.videoId}
-                              video={video}
-                              onSelect={() => {
-                                onSelectVideo(video);
-                                onClose();
-                              }}
-                              isSaved={isSaved}
-                              onToggleSave={() => onToggleSave(video)}
-                            />
-                          ))}
+                          {selectedPlaylist.videos.map((video, vIdx) => {
+                            const vid =
+                              typeof video.id === 'string'
+                                ? video.id
+                                : (video.id as any)?.videoId ||
+                                  (video as any).snippet?.resourceId?.videoId ||
+                                  (video as any).contentDetails?.videoId ||
+                                  video.firstVideoId ||
+                                  '';
+                            return (
+                              <VideoCard
+                                key={vid || vIdx}
+                                video={video}
+                                onSelectVideo={() => {
+                                  onSelectVideo({
+                                    ...video,
+                                    id: vid || video.id,
+                                    firstVideoId: vid,
+                                    isPlaylist: false,
+                                    kind: 'youtube#video',
+                                    playlistId: selectedPlaylist.id,
+                                    customPlaylistItems: selectedPlaylist.videos,
+                                    customPlaylistTitle: selectedPlaylist.title
+                                  });
+                                  onClose();
+                                }}
+                                isSaved={isSaved}
+                                onToggleSave={() => onToggleSave(video)}
+                              />
+                            );
+                          })}
                         </div>
                       ) : (
                         <div className="py-16 text-center text-neutral-400 space-y-2">
@@ -957,30 +1250,16 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                                 key={plId}
                                 className="w-64 sm:w-72 shrink-0 bg-neutral-950 border border-neutral-800 rounded-xl overflow-hidden hover:border-rose-500/50 transition-all group flex flex-col cursor-pointer shadow-md hover:shadow-lg"
                                 style={{ scrollSnapAlign: 'start' }}
-                                onClick={async () => {
-                                  if (!plId) return;
-                                  setLoadingPlaylistVideos(true);
-                                  setSelectedPlaylist({ id: String(plId), title: plTitle, videos: [] });
-                                  try {
-                                    const res = await customFetch(`/api/youtube/playlist/${plId}`);
-                                    const data = await res.json();
-                                    if (data.items && Array.isArray(data.items)) {
-                                      setSelectedPlaylist({
-                                        id: String(plId),
-                                        title: data.playlist?.snippet?.title || plTitle,
-                                        videos: data.items
-                                      });
-                                    }
-                                  } catch (err) {
-                                    console.error('Error fetching playlist videos:', err);
-                                  } finally {
-                                    setLoadingPlaylistVideos(false);
-                                  }
-                                }}
+                                onClick={() => handleOpenPlaylist(pl)}
                               >
                                 <div className="relative aspect-video bg-neutral-900 overflow-hidden">
                                   {plThumb ? (
-                                    <img src={plThumb} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                                    <ThumbnailImage
+                                      video={pl}
+                                      fallbackUrl={plThumb}
+                                      alt=""
+                                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                    />
                                   ) : (
                                     <div className="w-full h-full flex items-center justify-center text-neutral-500">
                                       <ListMusic className="w-8 h-8" />
@@ -1025,30 +1304,16 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
                             <div
                               key={plId}
                               className="bg-neutral-950 border border-neutral-800 rounded-xl overflow-hidden hover:border-rose-500/50 transition-colors group flex flex-col cursor-pointer"
-                              onClick={async () => {
-                                if (!plId) return;
-                                setLoadingPlaylistVideos(true);
-                                setSelectedPlaylist({ id: String(plId), title: plTitle, videos: [] });
-                                try {
-                                  const res = await customFetch(`/api/youtube/playlist/${plId}`);
-                                  const data = await res.json();
-                                  if (data.items && Array.isArray(data.items)) {
-                                    setSelectedPlaylist({
-                                      id: String(plId),
-                                      title: data.playlist?.snippet?.title || plTitle,
-                                      videos: data.items
-                                    });
-                                  }
-                                } catch (err) {
-                                  console.error('Error fetching playlist videos:', err);
-                                } finally {
-                                  setLoadingPlaylistVideos(false);
-                                }
-                              }}
+                              onClick={() => handleOpenPlaylist(pl)}
                             >
                               <div className="relative aspect-video bg-neutral-900 overflow-hidden">
                                 {plThumb ? (
-                                  <img src={plThumb} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                                  <ThumbnailImage
+                                    video={pl}
+                                    fallbackUrl={plThumb}
+                                    alt=""
+                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                  />
                                 ) : (
                                   <div className="w-full h-full flex items-center justify-center text-neutral-500">
                                     <ListMusic className="w-8 h-8" />

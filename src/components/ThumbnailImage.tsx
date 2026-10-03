@@ -2,14 +2,15 @@ import React, { useState, useEffect } from 'react';
 import {
   extractThumbnailUrl,
   fetchImageAsBase64,
+  getCachedBase64Thumbnail,
   isBase64ThumbnailsEnabled
 } from '../utils/thumbnail';
-import {
-  getThumbnailFromIndexedDB,
-  cacheThumbnailFromUrl
-} from '../utils/indexedDbThumbnailStorage';
+import { getThumbnailFromIndexedDB } from '../utils/indexedDbThumbnailStorage';
 
 type ThumbnailQuality = 'high' | 'medium' | 'default';
+
+const TRANSPARENT_PLACEHOLDER =
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 interface ThumbnailImageProps {
   video?: any;
@@ -63,33 +64,45 @@ export const ThumbnailImage: React.FC<ThumbnailImageProps> = ({
     rawUrl = extracted.url || fallbackUrl;
   }
 
-  const [src, setSrc] = useState<string>(rawUrl);
+  const initialCached = getCachedBase64Thumbnail(rawUrl, effectiveVideoId);
+  const [src, setSrc] = useState<string>(() => {
+    if (initialCached) return initialCached;
+    if (!useBase64) return rawUrl;
+    if (rawUrl && rawUrl.startsWith('data:')) return rawUrl;
+    return TRANSPARENT_PLACEHOLDER;
+  });
   const [hasError, setHasError] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
-    if (!rawUrl) return;
+    setHasError(false);
 
-    // Check IndexedDB cache first for offline capability
-    getThumbnailFromIndexedDB(rawUrl).then((cachedBlob) => {
-      if (isMounted && cachedBlob) {
-        setSrc(cachedBlob);
-        return;
-      }
+    if (!rawUrl && !effectiveVideoId) {
+      setSrc(TRANSPARENT_PLACEHOLDER);
+      return;
+    }
 
-      if (useBase64 && !rawUrl.startsWith('data:')) {
-        fetchImageAsBase64(rawUrl).then((b64) => {
-          if (isMounted && b64) {
-            setSrc(b64);
-          }
-        });
-      } else {
-        setSrc(rawUrl);
-      }
+    const syncCached = getCachedBase64Thumbnail(rawUrl, effectiveVideoId);
+    if (syncCached && syncCached.startsWith('data:')) {
+      setSrc(syncCached);
+      return;
+    }
 
-      // Asynchronously store binary ArrayBuffer into IndexedDB for offline access
-      cacheThumbnailFromUrl(rawUrl, effectiveVideoId);
-    });
+    if (useBase64) {
+      fetchImageAsBase64(rawUrl, effectiveVideoId).then((b64) => {
+        if (isMounted && b64) {
+          setSrc(b64);
+        }
+      });
+    } else {
+      getThumbnailFromIndexedDB(rawUrl || effectiveVideoId).then((cachedDataUri) => {
+        if (isMounted && cachedDataUri) {
+          setSrc(cachedDataUri);
+        } else if (isMounted) {
+          setSrc(rawUrl);
+        }
+      });
+    }
 
     return () => {
       isMounted = false;
@@ -99,38 +112,33 @@ export const ThumbnailImage: React.FC<ThumbnailImageProps> = ({
   const handleError = () => {
     if (!hasError) {
       setHasError(true);
-      // Fallback strategies:
-      // 0. Check if IndexedDB has cached version under videoId
       if (effectiveVideoId) {
-        getThumbnailFromIndexedDB(effectiveVideoId).then((blobUrl) => {
-          if (blobUrl) {
-            setSrc(blobUrl);
-            return;
-          }
-          // 1. If Invidious URL failed, try YouTube fallback
-          if (!src.includes('i.ytimg.com')) {
-            setSrc(`https://i.ytimg.com/vi/${effectiveVideoId}/hqdefault.jpg`);
-          } else if (fallbackUrl && src !== fallbackUrl) {
-            setSrc(fallbackUrl);
-          } else {
-            // Generic YouTube placeholder
-            setSrc('https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=800&auto=format&fit=crop&q=80');
-          }
-        });
+        const ytFallback = `https://i.ytimg.com/vi/${effectiveVideoId}/hqdefault.jpg`;
+        if (useBase64) {
+          fetchImageAsBase64(ytFallback, effectiveVideoId).then((b64) => {
+            if (b64) setSrc(b64);
+          });
+        } else {
+          setSrc(ytFallback);
+        }
         return;
       }
 
       if (fallbackUrl && src !== fallbackUrl) {
-        setSrc(fallbackUrl);
-      } else {
-        setSrc('https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=800&auto=format&fit=crop&q=80');
+        if (useBase64) {
+          fetchImageAsBase64(fallbackUrl).then((b64) => {
+            if (b64) setSrc(b64);
+          });
+        } else {
+          setSrc(fallbackUrl);
+        }
       }
     }
   };
 
   return (
     <img
-      src={src || rawUrl}
+      src={src || TRANSPARENT_PLACEHOLDER}
       alt={alt}
       className={className}
       loading={loading}

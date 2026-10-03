@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Settings, X, Globe, Key, Check, RefreshCw, Server, Shield, Sparkles, Image as ImageIcon, Zap, Sun, Moon, Laptop } from 'lucide-react';
+import { Settings, X, Globe, Check, RefreshCw, Server, Sparkles, Image as ImageIcon, Zap, Sun, Moon, Laptop, Cpu, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { ApiSettings } from '../types';
-import { PRESET_INVIDIOUS_INSTANCES, DEFAULT_SETTINGS } from '../utils/apiClient';
+import { PRESET_INVIDIOUS_INSTANCES, PRESET_INNERTUBE_INSTANCES, DEFAULT_SETTINGS } from '../utils/apiClient';
 import {
   isBase64ThumbnailsEnabled,
   setBase64ThumbnailsEnabled,
@@ -25,28 +25,68 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSaveSettings,
   onOpenProxyGuide
 }) => {
+  const [innertubeUrl, setInnertubeUrl] = useState<string>(settings.innertubeUrl || DEFAULT_SETTINGS.innertubeUrl || 'https://proxy.wa0260966.workers.dev/');
   const [invidiousUrl, setInvidiousUrl] = useState<string>(settings.invidiousUrl || 'https://yt.omada.cafe/');
-  const [youtubeApiKey, setYoutubeApiKey] = useState<string>(settings.youtubeApiKey || '');
   const [useBase64, setUseBase64] = useState<boolean>(isBase64ThumbnailsEnabled());
   const [useInvidiousThumb, setUseInvidiousThumb] = useState<boolean>(isInvidiousThumbnailsEnabled());
   const [themeMode, setLocalThemeMode] = useState<ThemeMode>(() => getThemePreference());
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [testResult, setTestResult] = useState<{ loading: boolean; success?: boolean; message?: string } | null>(null);
 
   if (!isOpen) return null;
+
+  const handleTestInnerTube = async () => {
+    setTestResult({ loading: true });
+    try {
+      const cleanUrl = innertubeUrl.trim() || 'https://proxy.wa0260966.workers.dev/';
+      const res = await fetch('/api/innertube/test', {
+        headers: { 'x-innertube-url': cleanUrl }
+      });
+      const data = await res.json();
+      if (data.valid) {
+        setTestResult({
+          loading: false,
+          success: true,
+          message: data.message || 'InnerTube API への疎通に成功しました！APIキー不要で正常稼働しています。'
+        });
+      } else {
+        setTestResult({
+          loading: false,
+          success: false,
+          message: data.message || 'InnerTube API への接続に応答がありませんでした。'
+        });
+      }
+    } catch (e: any) {
+      setTestResult({
+        loading: false,
+        success: false,
+        message: 'テスト通信に失敗しました: ' + (e.message || '')
+      });
+    }
+  };
 
   const handlePresetSelect = (url: string) => {
     setInvidiousUrl(url);
   };
 
+  const handleInnerTubePresetSelect = (url: string) => {
+    setInnertubeUrl(url);
+  };
+
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     const cleanInvidious = invidiousUrl.trim() ? invidiousUrl.trim() : 'https://yt.omada.cafe/';
+    const rawInnerTube = innertubeUrl.trim() ? innertubeUrl.trim() : '/api/worker';
+    const cleanInnerTube =
+      rawInnerTube.startsWith('/') || rawInnerTube === 'self'
+        ? '/api/worker'
+        : rawInnerTube.endsWith('/')
+        ? rawInnerTube
+        : rawInnerTube + '/';
     onSaveSettings({
       provider: 'innertube',
-      innertubeUrl: 'https://yt-api.myproxy0108.workers.dev/',
-      invidiousUrl: cleanInvidious.endsWith('/') ? cleanInvidious : cleanInvidious + '/',
-      youtubeApiKey: youtubeApiKey.trim(),
-      forceYoutubeV3: false
+      innertubeUrl: cleanInnerTube,
+      invidiousUrl: cleanInvidious.endsWith('/') ? cleanInvidious : cleanInvidious + '/'
     });
     setBase64ThumbnailsEnabled(useBase64);
     setInvidiousThumbnailsEnabled(useInvidiousThumb);
@@ -60,11 +100,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleReset = () => {
     setInvidiousUrl(DEFAULT_SETTINGS.invidiousUrl);
-    setYoutubeApiKey('');
+    setInnertubeUrl(DEFAULT_SETTINGS.innertubeUrl);
     setUseBase64(true);
-    setUseInvidiousThumb(true);
+    setUseInvidiousThumb(false);
     setLocalThemeMode('system');
     setThemePreference('system');
+    setTestResult(null);
   };
 
   return (
@@ -73,11 +114,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         {/* Modal Header */}
         <div className="flex items-center justify-between p-4 sm:p-5 border-b border-neutral-800 bg-neutral-950/60">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-500">
+            <div className="w-9 h-9 rounded-xl bg-neutral-800 border border-neutral-700 flex items-center justify-center text-neutral-200">
               <Settings className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white tracking-tight">環境・データ設定</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-bold text-white tracking-tight">環境・データ設定</h2>
+                <span className="px-2 py-0.5 rounded bg-neutral-800 border border-neutral-700 text-[10px] font-bold text-neutral-300">
+                  制作: 海斗
+                </span>
+              </div>
               <p className="text-xs text-neutral-400">表示・キャッシュおよびバックエンド設定</p>
             </div>
           </div>
@@ -123,72 +169,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             )}
           </div>
 
-          {/* Theme Settings: デバイスに合わせる / ライトモード / ダークモード */}
-          <div className="space-y-3 bg-neutral-950/50 p-4 rounded-xl border border-neutral-800">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-neutral-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Sun className="w-3.5 h-3.5 text-amber-400" />
-                <span>カラーテーマ設定</span>
-              </label>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-neutral-800 text-neutral-300 border border-neutral-700">
-                {themeMode === 'system' ? 'OS連動（自動追従）' : themeMode === 'light' ? 'ライト' : 'ダーク'}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setLocalThemeMode('system');
-                  setThemePreference('system');
-                }}
-                className={`p-3 rounded-xl border flex flex-col items-center justify-center gap-1.5 text-xs font-bold transition-all cursor-pointer ${
-                  themeMode === 'system'
-                    ? 'bg-rose-600/20 text-rose-300 border-rose-500 shadow-sm'
-                    : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:border-neutral-700 hover:text-white'
-                }`}
-              >
-                <Laptop className="w-4 h-4" />
-                <span className="text-[11px] text-center leading-tight">デバイスに合わせる</span>
-                <span className="text-[9px] text-neutral-500 font-normal">OS設定に自動追従</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setLocalThemeMode('light');
-                  setThemePreference('light');
-                }}
-                className={`p-3 rounded-xl border flex flex-col items-center justify-center gap-1.5 text-xs font-bold transition-all cursor-pointer ${
-                  themeMode === 'light'
-                    ? 'bg-amber-500/20 text-amber-300 border-amber-500 shadow-sm'
-                    : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:border-neutral-700 hover:text-white'
-                }`}
-              >
-                <Sun className="w-4 h-4 text-amber-400" />
-                <span className="text-[11px] text-center leading-tight">ライトモード</span>
-                <span className="text-[9px] text-neutral-500 font-normal">明るい背景</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setLocalThemeMode('dark');
-                  setThemePreference('dark');
-                }}
-                className={`p-3 rounded-xl border flex flex-col items-center justify-center gap-1.5 text-xs font-bold transition-all cursor-pointer ${
-                  themeMode === 'dark'
-                    ? 'bg-purple-500/20 text-purple-300 border-purple-500 shadow-sm'
-                    : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:border-neutral-700 hover:text-white'
-                }`}
-              >
-                <Moon className="w-4 h-4 text-purple-400" />
-                <span className="text-[11px] text-center leading-tight">ダークモード</span>
-                <span className="text-[9px] text-neutral-500 font-normal">暗い背景</span>
-              </button>
-            </div>
-          </div>
-
           {/* Invidious Instance Config */}
           <div className="space-y-3 bg-neutral-950/50 p-4 rounded-xl border border-neutral-800">
             <label className="text-xs font-semibold text-neutral-300 uppercase tracking-wider flex items-center gap-1.5">
@@ -232,22 +212,110 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
-          {/* Custom YouTube API Key */}
-          <div className="space-y-2 bg-neutral-950/50 p-4 rounded-xl border border-neutral-800">
-            <label className="text-xs font-semibold text-neutral-300 uppercase tracking-wider flex items-center gap-1.5">
-              <Key className="w-3.5 h-3.5 text-rose-500" />
-              <span>カスタム YouTube Data API キー (任意)</span>
-            </label>
-            <input
-              type="password"
-              value={youtubeApiKey}
-              onChange={(e) => setYoutubeApiKey(e.target.value)}
-              placeholder="AIzaSy..."
-              className="w-full px-3.5 py-2 bg-neutral-900 border border-neutral-700 rounded-lg text-xs font-mono text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500 transition-colors"
-            />
-            <p className="text-[11px] text-neutral-400">
-              ご自身のGoogle Cloud ConsoleのYouTube Data API v3キーを設定する場合に入力してください（空欄の場合はサーバー共有キーを使用します）。
+          {/* InnerTube API Engine Config */}
+          <div className="space-y-3 bg-neutral-950/50 p-4 rounded-xl border border-neutral-800">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-neutral-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5 text-rose-500" />
+                <span>InnerTube API 設定 (YouTube公式内部通信・キー不要)</span>
+              </label>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                100% キー不要
+              </span>
+            </div>
+
+            <p className="text-xs text-neutral-400 leading-relaxed">
+              Google Cloud APIキー不要で、YouTube公式アプリと同じ内部API（InnerTube）を経由して検索・急上昇・動画情報を直接取得します。クォータ（回数上限）制限もありません。
             </p>
+
+            {/* Presets */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] text-neutral-400">推奨プロキシエンドポイント:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {PRESET_INNERTUBE_INSTANCES.map((inst) => (
+                  <button
+                    key={inst.url}
+                    type="button"
+                    onClick={() => handleInnerTubePresetSelect(inst.url)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                      innertubeUrl === inst.url
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/50'
+                        : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:border-neutral-700 hover:text-neutral-200'
+                    }`}
+                  >
+                    {inst.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* URL Input */}
+            <div className="space-y-1">
+              <input
+                type="text"
+                value={innertubeUrl}
+                onChange={(e) => setInnertubeUrl(e.target.value)}
+                placeholder="/api/worker または https://your-worker.workers.dev/"
+                className="w-full px-3.5 py-2 bg-neutral-900 border border-neutral-700 rounded-lg text-xs font-mono text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500 transition-colors"
+              />
+              <p className="text-[11px] text-neutral-400">
+                内蔵エンジン (<code className="text-emerald-400 font-mono">/api/worker</code>) または自作 Cloudflare Worker URL (<code className="text-rose-400 font-mono">https://...workers.dev/</code>) を指定できます。
+              </p>
+            </div>
+
+            {/* Test Connection & Open Self-Built Worker Code Generator Buttons */}
+            <div className="pt-1 flex flex-col sm:flex-row gap-2">
+              <button
+                type="button"
+                onClick={handleTestInnerTube}
+                disabled={testResult?.loading}
+                className="flex-1 px-3 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-colors border border-neutral-700 disabled:opacity-60"
+              >
+                {testResult?.loading ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-rose-400" />
+                    <span>InnerTube Worker 通信テスト中...</span>
+                  </>
+                ) : (
+                  <>
+                    <Zap className="w-3.5 h-3.5 text-rose-400" />
+                    <span>InnerTube Worker 接続テストを実行</span>
+                  </>
+                )}
+              </button>
+
+              {onOpenProxyGuide && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenProxyGuide();
+                  }}
+                  className="px-3 py-2 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/40 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Cpu className="w-3.5 h-3.5 text-rose-400" />
+                  <span>自作Workerコード発行</span>
+                </button>
+              )}
+            </div>
+
+            {/* Test Result Message */}
+            {testResult && !testResult.loading && (
+              <div
+                className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
+                  testResult.success
+                    ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300'
+                    : 'bg-rose-950/40 border-rose-800 text-rose-300'
+                }`}
+              >
+                {testResult.success ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                )}
+                <span>{testResult.message}</span>
+              </div>
+            )}
           </div>
 
           {/* Thumbnail Base64 & Invidious Settings (KaitoTube Reference) */}

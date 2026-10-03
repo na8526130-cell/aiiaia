@@ -1,32 +1,34 @@
 import React, { useState } from 'react';
-import { Maximize2, X, Volume2, Music, GraduationCap, Film } from 'lucide-react';
+import { Maximize2, X } from 'lucide-react';
 import { YouTubeVideoItem, PlaybackMode } from '../types';
+import { EducationPlayer } from './EducationPlayer';
 
 interface MiniFloatingPlayerProps {
   video: YouTubeVideoItem;
   playbackMode: PlaybackMode;
   onOpenDetail: () => void;
   onClose: () => void;
+  onEnded?: () => void;
 }
 
 export const MiniFloatingPlayer: React.FC<MiniFloatingPlayerProps> = ({
   video,
   playbackMode,
   onOpenDetail,
-  onClose
+  onClose,
+  onEnded
 }) => {
   const [isHovered, setIsHovered] = useState(false);
-  const videoId = typeof video.id === 'string' ? video.id : video.id?.videoId || '';
+  const rawId = typeof video.id === 'string' ? video.id : (video.id as any)?.videoId || '';
+  const videoId =
+    video.firstVideoId ||
+    (typeof video.id === 'object' ? (video.id as any)?.videoId : undefined) ||
+    (video as any).snippet?.resourceId?.videoId ||
+    (video as any).contentDetails?.videoId ||
+    (!/^(PL|UU|FL|LP|RD|OLAK5uy_)/.test(rawId) ? rawId : '');
   const title = video.snippet?.title || '動画を再生中';
-  const channelTitle = video.snippet?.channelTitle || '';
 
-  // Generate embed URL
-  const embedUrl =
-    playbackMode === 'education'
-      ? `https://www.youtubeeducation.com/embed/${videoId}?autoplay=1&mute=0&controls=1&playsinline=1`
-      : playbackMode === 'nocookie'
-      ? `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=0&controls=1&playsinline=1`
-      : `/api/youtube/stream-mux/${videoId}`;
+  if (!videoId) return null;
 
   return (
     <div
@@ -64,41 +66,23 @@ export const MiniFloatingPlayer: React.FC<MiniFloatingPlayerProps> = ({
 
       {/* Video Content */}
       <div className="relative aspect-video bg-black w-full overflow-hidden">
-        {playbackMode.startsWith('stream-') && playbackMode !== 'stream-audio' ? (
-          <video
-            src={`/api/youtube/stream-mux/${videoId}`}
-            autoPlay
-            controls
-            playsInline
-            className="w-full h-full object-contain"
-          />
-        ) : playbackMode === 'stream-audio' ? (
-          <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-gradient-to-b from-neutral-900 to-neutral-950">
-            <Music className="w-8 h-8 text-teal-400 animate-bounce mb-2" />
-            <p className="text-xs text-neutral-300 font-medium truncate max-w-full px-2">
-              {channelTitle}
-            </p>
-            <audio
-              src={`/api/youtube/stream-direct/${videoId}?type=audio`}
-              autoPlay
-              controls
-              className="w-full max-w-[240px] mt-2 h-8"
-            />
-          </div>
-        ) : (
-          <iframe
-            src={embedUrl}
-            title={title}
-            className="w-full h-full border-0 pointer-events-auto"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            allowFullScreen
-          />
-        )}
+        <EducationPlayer
+          videoId={videoId}
+          title={title}
+          playbackMode={playbackMode}
+          isShort={true}
+          onEnded={onEnded}
+          className="w-full h-full"
+        />
       </div>
 
       {/* Mini Footer Notice */}
       <div className="bg-neutral-950 px-3 py-1.5 flex items-center justify-between text-[10px] text-neutral-400 border-t border-neutral-900">
-        <span className="truncate">次の動画を選ぶまで再生中</span>
+        <span className="truncate">
+          {video.customPlaylistTitle
+            ? `再生リスト: ${video.customPlaylistTitle}`
+            : '次の動画を選ぶまで連続再生中'}
+        </span>
         <button
           onClick={onOpenDetail}
           className="text-rose-400 hover:text-rose-300 font-semibold cursor-pointer shrink-0"
