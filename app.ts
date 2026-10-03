@@ -1609,10 +1609,21 @@ app.get(['/api/__guard/status', '/api/v1/guard/status'], async (req, res) => {
   }
 });
 
-// 0-4. Google Apps Script (GAS) Sync & Code Generator (Serves latest gas/Code.gs and gas/index.html)
+// 0-4. Google Apps Script (GAS) Sync & Code Generator (Serves latest gas/Code.gs, gas/bundle.js, and gas/index.html)
+app.get('/gas/bundle.js', (req, res) => {
+  try {
+    const bundleJs = fs.readFileSync(path.join(process.cwd(), 'gas', 'bundle.js'), 'utf8');
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    return res.send(bundleJs);
+  } catch {
+    return res.status(404).send('// bundle.js not found');
+  }
+});
+
 app.get('/api/gas/code', (req, res) => {
   let gasScript = '';
   let gasHtml = '';
+  let gasBundle = '';
   try {
     gasScript = fs.readFileSync(path.join(process.cwd(), 'gas', 'Code.gs'), 'utf8');
   } catch (err) {
@@ -1623,6 +1634,11 @@ app.get('/api/gas/code', (req, res) => {
   } catch (err) {
     console.warn('Failed to read gas/index.html:', err);
   }
+  try {
+    gasBundle = fs.readFileSync(path.join(process.cwd(), 'gas', 'bundle.js'), 'utf8');
+  } catch (err) {
+    console.warn('Failed to read gas/bundle.js:', err);
+  }
 
   if (req.query.format === 'text') {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -1632,12 +1648,17 @@ app.get('/api/gas/code', (req, res) => {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     return res.send(gasHtml);
   }
+  if (req.query.format === 'bundle' || req.query.format === 'js') {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    return res.send(gasBundle);
+  }
   return res.json({
     success: true,
     code: gasScript,
     html: gasHtml,
+    bundleJs: gasBundle,
     updatedAt: new Date().toISOString(),
-    functionNames: ['doGet', 'doPost', 'handleGasApiRequest', 'handleProxy', 'fetchAsBase64', 'refreshHtmlToDocs']
+    functionNames: ['doGet', 'doPost', 'handleGasApiRequest', 'handleProxy', 'fetchAsBase64', 'getRemoteBundleJs', 'refreshHtmlToDocs']
   });
 });
 

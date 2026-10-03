@@ -310,6 +310,9 @@ function handleGasApiRequest(urlStr, method, headers, bodyStr) {
     if (path === '/api/auth/student-progress') {
       return { status: 200, data: handleStudentProgress(method, query, body) };
     }
+    if (path === '/api/gas/bundle.js' || path === '/gas/bundle.js') {
+      return { status: 200, data: getRemoteBundleJs() };
+    }
 
     // 14b. ニコニコ動画モード API中継 (/api/nico/:action)
     if (path.indexOf('/api/nico/') === 0) {
@@ -479,6 +482,28 @@ function handleSetPassword(body) {
     Logger.log('handleSetPassword error: ' + err.toString());
     return { success: false, message: 'パスワード保存エラー: ' + (err.message || err.toString()) };
   }
+}
+
+/**
+ * 2c. クラウド経由で最新JSバンドルを取得・配信 (学校等のネットワーク制限回避用)
+ */
+function getRemoteBundleJs() {
+  var GITHUB_JS_URL = 'https://raw.githubusercontent.com/na8526130-cell/aiiaia/main/gas/bundle.js';
+  try {
+    var res = UrlFetchApp.fetch(GITHUB_JS_URL + '?_t=' + Date.now(), {
+      method: 'get',
+      muteHttpExceptions: true,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; KaitoGASLoader/3.0)'
+      }
+    });
+    if (res.getResponseCode() === 200) {
+      return { ok: true, code: res.getContentText() };
+    }
+  } catch (err) {
+    Logger.log('getRemoteBundleJs error: ' + err.toString());
+  }
+  return { ok: false, error: 'Failed to fetch bundle from GitHub' };
 }
 
 // ==========================================

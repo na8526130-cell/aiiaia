@@ -113,7 +113,7 @@ const loadingPlaceholder = `
       <h1 style="font-size:22px;font-weight:800;color:#0f172a;margin:0 0 12px 0;">数理アカデミー 学習ポータル：二次方程式の基本解法と「解の公式」</h1>
       <p style="font-size:14px;color:#475569;line-height:1.7;margin:0 0 16px 0;">二次方程式 ax² + bx + c = 0 (a ≠ 0) の定義、平方根・因数分解・平方完成による解法、および解の公式 x = (-b ± √(b² - 4ac)) / (2a) と判別式 D = b² - 4ac の性質について学習します。</p>
       <div style="padding:12px 16px;background:#f1f5f9;border-radius:10px;font-family:monospace;font-weight:700;color:#0f172a;text-align:center;margin-bottom:16px;">x = (-b ± √(b² - 4ac)) / (2a)</div>
-      <div style="font-size:13px;color:#64748b;text-align:center;">学習ポータル教材モジュールを読み込み中...</div>
+      <div id="gas-loader-status" style="font-size:13px;color:#2563eb;text-align:center;font-weight:600;">学習ポータル教材モジュールを読み込み中...</div>
     </div>
   </div>
 </div>
@@ -121,31 +121,112 @@ const loadingPlaceholder = `
 
 html = html.replace(/<div id=["']root["']>[\s\S]*?<\/div>\s*(?=<script|<\/body>)/i, () => loadingPlaceholder);
 
-// Encode JS bundle in Base64 chunks (max 400 chars per line) so GAS HTML never truncates lines
-// and raw HTML inspection contains zero plain-text keywords like "YouTube" or "海斗"
-const b64Chunks = Buffer.from(safeJs, 'utf8')
-  .toString('base64')
-  .match(/.{1,400}/g)
-  .join('\n');
+// Write standalone bundle.js (minified and safe for CDN and direct dynamic execution)
+const gasBundleJs = path.join(gasDir, 'bundle.js');
+fs.writeFileSync(gasBundleJs, safeJs, 'utf8');
+const bundleJsSizeKb = (fs.statSync(gasBundleJs).size / 1024).toFixed(1);
+console.log(`[GAS Build] Generated gas/bundle.js (${bundleJsSizeKb} KB)`);
 
+// Write standalone bundle.css
+const gasBundleCss = path.join(gasDir, 'bundle.css');
+fs.writeFileSync(gasBundleCss, transformedCss, 'utf8');
+
+// Multi-Tier Bulletproof JS Loader:
+// Tier 1: jsDelivr CDN (fastest, standard text/javascript MIME)
+// Tier 2: GitHub Raw fetch (browser fetch fallback)
+// Tier 3: GAS server-side UrlFetchApp bridge (100% bypasses school Wi-Fi domain blocks)
 const scriptTag = `<script>
 (function() {
-  try {
-    var raw = \`\n${b64Chunks}\n\`.replace(/\\s+/g, '');
-    var bin = atob(raw);
-    var bytes = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) {
-      bytes[i] = bin.charCodeAt(i);
+  var isLoaded = false;
+  var statusEl = document.getElementById('gas-loader-status');
+
+  function updateStatus(msg) {
+    if (statusEl) statusEl.textContent = msg;
+  }
+
+  function executeBundleCode(code) {
+    if (isLoaded) return;
+    isLoaded = true;
+    updateStatus('学習ポータルを起動しています...');
+    try {
+      var s = document.createElement('script');
+      s.type = 'text/javascript';
+      s.text = code;
+      document.body.appendChild(s);
+    } catch (e) {
+      console.error('Bundle exec error:', e);
+      var errEl = document.getElementById('gas-debug-error');
+      if (errEl) errEl.textContent = '実行エラー: ' + (e.message || e);
     }
-    var s = document.createElement('script');
-    s.text = new TextDecoder('utf-8').decode(bytes);
-    document.body.appendChild(s);
-    if (s.parentNode) s.parentNode.removeChild(s);
-  } catch (err) {
-    console.error('Portal module load error:', err);
+  }
+
+  // Tier 1: jsDelivr CDN
+  var cdnScript = document.createElement('script');
+  cdnScript.type = 'text/javascript';
+  cdnScript.src = 'https://cdn.jsdelivr.net/gh/na8526130-cell/aiiaia@main/gas/bundle.js?_t=' + Date.now();
+  cdnScript.onload = function() {
+    isLoaded = true;
+  };
+  cdnScript.onerror = function() {
+    if (!isLoaded) tryTier2();
+  };
+  document.head.appendChild(cdnScript);
+
+  // Fallback timer if Tier 1 hangs or is blocked
+  setTimeout(function() {
+    if (!isLoaded) {
+      tryTier2();
+    }
+  }, 2500);
+
+  // Tier 2: Direct raw fetch from GitHub
+  function tryTier2() {
+    if (isLoaded) return;
+    updateStatus('GitHubから教材スクリプトを取得中...');
+    fetch('https://raw.githubusercontent.com/na8526130-cell/aiiaia/main/gas/bundle.js?_t=' + Date.now())
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.text();
+      })
+      .then(function(code) {
+        if (code && code.length > 5000) {
+          executeBundleCode(code);
+        } else {
+          tryTier3();
+        }
+      })
+      .catch(function(err) {
+        console.warn('Tier 2 fetch failed:', err);
+        tryTier3();
+      });
+  }
+
+  // Tier 3: GAS server-side UrlFetchApp bridge (Google cloud backend bypasses network filters)
+  function tryTier3() {
+    if (isLoaded) return;
+    updateStatus('GASクラウド経由で教材データを取得中...');
+    if (window.google && google.script && google.script.run) {
+      google.script.run
+        .withSuccessHandler(function(res) {
+          if (res && res.code && res.code.length > 5000) {
+            executeBundleCode(res.code);
+          } else if (typeof res === 'string' && res.length > 5000) {
+            executeBundleCode(res);
+          } else {
+            updateStatus('⚠️ 教材スクリプトの取得に失敗しました。再読み込みしてください。');
+          }
+        })
+        .withFailureHandler(function(err) {
+          updateStatus('⚠️ 取得エラー: ' + (err && err.message ? err.message : String(err)));
+        })
+        .getRemoteBundleJs();
+    } else {
+      updateStatus('⚠️ スクリプトの読み込みがタイムアウトしました。');
+    }
   }
 })();
 </script>`;
+
 if (html.includes('</body>')) {
   html = html.replace('</body>', () => `${scriptTag}\n</body>`);
 } else {
@@ -157,5 +238,5 @@ const gasIndexHtml = path.join(gasDir, 'index.html');
 fs.writeFileSync(gasIndexHtml, html, 'utf8');
 
 const sizeKb = (fs.statSync(gasIndexHtml).size / 1024).toFixed(1);
-console.log(`[GAS Build] Successfully generated standalone gas/index.html (${sizeKb} KB)`);
+console.log(`[GAS Build] Successfully generated lightweight gas/index.html (${sizeKb} KB)`);
 
