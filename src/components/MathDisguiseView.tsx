@@ -49,6 +49,15 @@ import {
   StudentStudyProgress,
   RegisteredExamItem
 } from './StudyAdvancedTools';
+import {
+  getDisguiseAuthConfig,
+  saveDisguiseAuthConfig,
+  verifyLocalDisguiseCredentials,
+  resetDisguiseAuth,
+  DEFAULT_AUTH_ID,
+  DEFAULT_AUTH_PASSWORD,
+  DisguiseAuthConfig
+} from '../utils/authConfig';
 
 interface MathDisguiseViewProps {
   onUnlock: () => void;
@@ -59,12 +68,19 @@ export const MathDisguiseView: React.FC<MathDisguiseViewProps> = ({
   onUnlock,
   initialStudyPortalOpen = false
 }) => {
-  const [username, setUsername] = useState('');
+  const [authConfig, setAuthConfig] = useState<DisguiseAuthConfig>(() => getDisguiseAuthConfig());
+  const [username, setUsername] = useState(() => getDisguiseAuthConfig().customId || DEFAULT_AUTH_ID);
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [isSuccess, setIsSuccess] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showPasswordSettingsModal, setShowPasswordSettingsModal] = useState(false);
+  const [configIdInput, setConfigIdInput] = useState(() => authConfig.customId);
+  const [configPassInput, setConfigPassInput] = useState(() => authConfig.customPassword);
+  const [configRequirePass, setConfigRequirePass] = useState(() => authConfig.requirePassword);
+  const [configQuickUnlock, setConfigQuickUnlock] = useState(() => authConfig.allowQuickUnlock);
+  const [configSuccessMsg, setConfigSuccessMsg] = useState('');
 
   // Interactive Study Portal State (opened ONLY when ID=education / PW=matheducation, or via Boss Key)
   const [isStudyPortalOpen, setIsStudyPortalOpen] = useState<boolean>(() => Boolean(initialStudyPortalOpen));
@@ -531,26 +547,95 @@ export const MathDisguiseView: React.FC<MathDisguiseViewProps> = ({
     }, 400);
   };
 
+  const handleQuickUnlock = () => {
+    setIsSuccess(true);
+    setErrorMsg('');
+    setTimeout(() => {
+      onUnlock();
+    }, 300);
+  };
+
+  const handleSavePasswordSettings = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanId = configIdInput.trim() || DEFAULT_AUTH_ID;
+    const cleanPass = configPassInput.trim() || DEFAULT_AUTH_PASSWORD;
+    const updated = saveDisguiseAuthConfig({
+      customId: cleanId,
+      customPassword: cleanPass,
+      requirePassword: configRequirePass,
+      allowQuickUnlock: configQuickUnlock
+    });
+    setAuthConfig(updated);
+    setUsername(cleanId);
+    setConfigSuccessMsg('パスワード設定を保存しました！');
+    setTimeout(() => {
+      setConfigSuccessMsg('');
+      setShowPasswordSettingsModal(false);
+    }, 900);
+  };
+
+  const handleResetPasswordSettings = () => {
+    const updated = resetDisguiseAuth();
+    setAuthConfig(updated);
+    setConfigIdInput(DEFAULT_AUTH_ID);
+    setConfigPassInput(DEFAULT_AUTH_PASSWORD);
+    setConfigRequirePass(true);
+    setConfigQuickUnlock(true);
+    setUsername(DEFAULT_AUTH_ID);
+    setConfigSuccessMsg('初期値 (ID: kaito / PW: @0726kaito) にリセットしました。');
+    setTimeout(() => {
+      setConfigSuccessMsg('');
+    }, 1200);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmedUser = username.trim();
+    const trimmedUser = username.trim() || authConfig.customId || 'kaito';
     const trimmedPass = password.trim();
 
-    if (!trimmedUser || !trimmedPass) {
-      setErrorMsg('受講生IDとパスワードを入力してください。');
+    // If password requirement is disabled, allow unlock immediately
+    if (!authConfig.requirePassword) {
+      setIsSuccess(true);
+      setErrorMsg('');
+      setTimeout(() => {
+        onUnlock();
+      }, 300);
+      return;
+    }
+
+    if (!trimmedPass) {
+      setErrorMsg('パスワードを入力してください。（パスワードが未設定または不要な場合は「ワンクリック解除」をご利用ください）');
       return;
     }
 
     setIsLoading(true);
     setErrorMsg('');
 
-    // Direct check for dedicated study portal account (ONLY ID: education / PW: matheducation)
+    // 1. Direct check for dedicated study portal account (ONLY ID: education / PW: matheducation)
     if (trimmedUser === 'education' && trimmedPass === 'matheducation') {
       setIsLoading(false);
       enterStudyPortal('education', '');
       return;
     }
 
+    // 2. Direct local verification (fastest, works offline / GAS sync)
+    const localCheck = verifyLocalDisguiseCredentials(trimmedUser, trimmedPass);
+    if (localCheck.success) {
+      if (localCheck.mode === 'study') {
+        setIsLoading(false);
+        enterStudyPortal('education', '');
+        return;
+      }
+      setIsSuccess(true);
+      setErrorMsg('');
+      setTimeout(() => {
+        onUnlock();
+      }, 400);
+      setIsLoading(false);
+      return;
+    }
+
+    // 3. Fallback: Query server / GAS verification endpoint
     try {
       const res = await customFetch('/api/auth/verify', {
         method: 'POST',
@@ -569,29 +654,12 @@ export const MathDisguiseView: React.FC<MathDisguiseViewProps> = ({
         setErrorMsg('');
         setTimeout(() => {
           onUnlock();
-        }, 500);
-        return;
-      }
-
-      if (trimmedUser === 'kaito' && trimmedPass === '@0726kaito') {
-        setIsSuccess(true);
-        setErrorMsg('');
-        setTimeout(() => {
-          onUnlock();
-        }, 500);
+        }, 400);
         return;
       }
 
       setErrorMsg(data?.message || '受講生IDまたはパスワードが正しくありません。');
     } catch {
-      if (trimmedUser === 'kaito' && trimmedPass === '@0726kaito') {
-        setIsSuccess(true);
-        setErrorMsg('');
-        setTimeout(() => {
-          onUnlock();
-        }, 500);
-        return;
-      }
       setErrorMsg('受講生IDまたはパスワードが正しくありません。');
     } finally {
       setIsLoading(false);
@@ -607,6 +675,23 @@ export const MathDisguiseView: React.FC<MathDisguiseViewProps> = ({
         <h4 className="text-base font-bold text-slate-900">特講受講生・専用アクセス認証</h4>
         <p className="text-xs text-slate-500">
           全教科の問題演習・インタラクティブ教材・解説へ進むには受講生認証を行ってください
+        </p>
+      </div>
+
+      {/* Info / Password hint banner */}
+      <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-xl text-xs text-blue-800 space-y-1">
+        <div className="flex items-center justify-between font-bold">
+          <span>💡 認証パスワード案内</span>
+          <button
+            type="button"
+            onClick={() => setShowPasswordSettingsModal(true)}
+            className="text-[11px] text-blue-600 hover:text-blue-800 underline font-semibold cursor-pointer"
+          >
+            パスワード設定・変更
+          </button>
+        </div>
+        <p className="text-[11px] leading-relaxed text-blue-700">
+          初期パスワード: <code className="bg-white/80 px-1 py-0.5 rounded border border-blue-300 font-mono font-bold text-blue-900">@0726kaito</code> （ID省略可）
         </p>
       </div>
 
@@ -626,29 +711,37 @@ export const MathDisguiseView: React.FC<MathDisguiseViewProps> = ({
 
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="space-y-1">
-          <label className="block text-xs font-bold text-slate-700">受講生ID (アカウント名)</label>
+          <label className="block text-xs font-bold text-slate-700">受講生ID (アカウント名・省略可)</label>
           <input
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            placeholder="受講生IDを入力"
-            required
+            placeholder="受講生ID (省略可・デフォルト: kaito)"
             className="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             id="disguise-id-input"
           />
         </div>
         <div className="space-y-1">
-          <label className="block text-xs font-bold text-slate-700">パスワード / アクセスキー</label>
+          <div className="flex items-center justify-between">
+            <label className="block text-xs font-bold text-slate-700">パスワード / アクセスキー</label>
+            <button
+              type="button"
+              onClick={() => setPassword(authConfig.customPassword || DEFAULT_AUTH_PASSWORD)}
+              className="text-[11px] text-blue-600 hover:text-blue-800 cursor-pointer"
+            >
+              初期パスワード自動入力
+            </button>
+          </div>
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="パスワードを入力"
-            required
+            placeholder="パスワードを入力 (初期値: @0726kaito)"
             className="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             id="disguise-password-input"
           />
         </div>
+
         <button
           type="submit"
           disabled={isLoading}
@@ -667,7 +760,30 @@ export const MathDisguiseView: React.FC<MathDisguiseViewProps> = ({
             </>
           )}
         </button>
+
+        {/* Quick Unlock Button (Always accessible so users are never locked out) */}
+        {authConfig.allowQuickUnlock && (
+          <button
+            type="button"
+            onClick={handleQuickUnlock}
+            className="w-full py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg border border-slate-300 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <Zap className="w-3.5 h-3.5 text-amber-500" />
+            <span>ワンクリックで解除（パスワード省略）</span>
+          </button>
+        )}
       </form>
+
+      <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+        <span>設定されたパスワードでお困りですか？</span>
+        <button
+          type="button"
+          onClick={() => setShowPasswordSettingsModal(true)}
+          className="text-blue-600 hover:text-blue-800 font-semibold cursor-pointer underline"
+        >
+          パスワード設定・リセット
+        </button>
+      </div>
     </div>
   );
 
@@ -1796,6 +1912,140 @@ export const MathDisguiseView: React.FC<MathDisguiseViewProps> = ({
               <X className="w-5 h-5" />
             </button>
             {renderAuthForm(true)}
+          </div>
+        </div>
+      )}
+
+      {/* Disguise Password Settings Modal */}
+      {showPasswordSettingsModal && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-lg w-full shadow-2xl overflow-hidden relative font-sans">
+            <div className="flex items-center justify-between p-5 border-b border-slate-100 bg-slate-50/70">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center">
+                  <Lock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900">偽装解除パスワード設定</h3>
+                  <p className="text-xs text-slate-500">解除パスワードの変更・省略設定を行えます</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPasswordSettingsModal(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSavePasswordSettings} className="p-6 space-y-4 text-xs sm:text-sm">
+              {configSuccessMsg && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl flex items-center gap-2 text-xs font-bold">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{configSuccessMsg}</span>
+                </div>
+              )}
+
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-slate-700 text-xs">
+                <span className="font-bold text-slate-900">💡 現在の解除パスワード設定</span>
+                <p>
+                  受講生ID: <code className="font-mono font-bold text-blue-800 bg-white px-1 py-0.5 rounded border border-slate-200">{authConfig.customId}</code> / パスワード: <code className="font-mono font-bold text-blue-800 bg-white px-1 py-0.5 rounded border border-slate-200">{authConfig.customPassword}</code>
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  ※ パスワードが合っていれば受講生IDの入力は省略しても解除されます。
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700">解除パスワード（自由に変更可能）</label>
+                <input
+                  type="text"
+                  value={configPassInput}
+                  onChange={(e) => setConfigPassInput(e.target.value)}
+                  placeholder="新しいパスワードを入力 (例: @0726kaito)"
+                  required
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700">受講生ID / アカウント名（自由に変更可能）</label>
+                <input
+                  type="text"
+                  value={configIdInput}
+                  onChange={(e) => setConfigIdInput(e.target.value)}
+                  placeholder="受講生ID (例: kaito)"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+                />
+              </div>
+
+              {/* Toggles */}
+              <div className="space-y-2 pt-1">
+                <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer">
+                  <div className="space-y-0.5 pr-2">
+                    <span className="font-bold text-xs text-slate-800 block">パスワード保護を必須にする</span>
+                    <span className="text-[11px] text-slate-500 block">
+                      OFFにすると、パスワードを入力せずにそのまま解除できるようになります。
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={configRequirePass}
+                    onChange={(e) => setConfigRequirePass(e.target.checked)}
+                    className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer">
+                  <div className="space-y-0.5 pr-2">
+                    <span className="font-bold text-xs text-slate-800 block">「ワンクリック解除」ボタンを表示</span>
+                    <span className="text-[11px] text-slate-500 block">
+                      ログイン画面に1タップで即座に動画画面へ進むボタンを表示します。
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={configQuickUnlock}
+                    onChange={(e) => setConfigQuickUnlock(e.target.checked)}
+                    className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                </label>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-2 flex flex-col sm:flex-row gap-2">
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 px-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-sm cursor-pointer transition-colors"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>パスワード設定を保存</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleResetPasswordSettings}
+                  className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs border border-slate-300 flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>初期値に戻す</span>
+                </button>
+              </div>
+
+              <div className="pt-1 text-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPasswordSettingsModal(false);
+                    handleQuickUnlock();
+                  }}
+                  className="text-xs font-bold text-blue-600 hover:text-blue-800 underline cursor-pointer"
+                >
+                  ⚡ 設定を閉じて今すぐ動画画面へ進む（ロック解除）
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

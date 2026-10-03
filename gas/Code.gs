@@ -50,21 +50,66 @@ function doGet(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  // 3. HTML Web App を描画（'index' または 'index.html' の両方に対応）
-  var htmlOutput;
-  try {
-    htmlOutput = HtmlService.createHtmlOutputFromFile('index');
-  } catch (err1) {
+  // 3. HTML Web App を描画（GitHub動的自動ローダー ＆ GASローカルキャッシュ＆フォールバック）
+  // GitHub (na8526130-cell/aiiaia) の最新ビルドHTMLを自動取得し、GASの再デプロイ不要で常に最新版を配信
+  var htmlContent = '';
+  var GITHUB_RAW_URL = 'https://raw.githubusercontent.com/na8526130-cell/aiiaia/main/gas/index.html';
+  var props = PropertiesService.getScriptProperties();
+
+  // キャッシュ有効期間: 10分間（GASのUrlFetch制限を節約しつつ高速表示）
+  var cachedHtml = props.getProperty('CACHED_GITHUB_HTML');
+  var cacheTimestamp = Number(props.getProperty('CACHED_GITHUB_HTML_TIME') || '0');
+  var now = Date.now();
+
+  // 10分以内のキャッシュがあれば即座に利用
+  if (cachedHtml && now - cacheTimestamp < 10 * 60 * 1000) {
+    htmlContent = cachedHtml;
+  } else {
     try {
-      htmlOutput = HtmlService.createHtmlOutputFromFile('index.html');
-    } catch (err2) {
-      return HtmlService.createHtmlOutput(
-        '<div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:30px;background:#f8fafc;color:#1e293b;min-height:100vh;">' +
-        '<h2 style="color:#0f172a;">⚠️ index.html が見つかりません</h2>' +
-        '<p>Google Apps Script エディタの左メニューで、<b>「＋」→「HTML」</b> をクリックし、ファイル名を <b>index</b> として作成してください。</p>' +
-        '<p style="color:#64748b;font-size:12px;">エラー詳細: ' + err1.message + ' | 数理アカデミー 学習ポータル</p>' +
-        '</div>'
-      );
+      var ghRes = UrlFetchApp.fetch(GITHUB_RAW_URL + '?_t=' + now, {
+        method: 'get',
+        muteHttpExceptions: true,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; KaitoGASLoader/3.0)'
+        }
+      });
+      if (ghRes.getResponseCode() === 200) {
+        var fetchedText = ghRes.getContentText();
+        if (fetchedText && fetchedText.length > 1000 && fetchedText.indexOf('</html>') !== -1) {
+          htmlContent = fetchedText;
+          try {
+            props.setProperty('CACHED_GITHUB_HTML', htmlContent);
+            props.setProperty('CACHED_GITHUB_HTML_TIME', String(now));
+          } catch (storageErr) {
+            // プロパティ上限（500KB）に達した場合はキャッシュをスキップして直接配信
+          }
+        }
+      }
+    } catch (fetchErr) {
+      Logger.log('GitHub fetch warning: ' + fetchErr);
+      if (cachedHtml) htmlContent = cachedHtml;
+    }
+  }
+
+  var htmlOutput;
+  if (htmlContent) {
+    htmlOutput = HtmlService.createHtmlOutput(htmlContent);
+  } else {
+    // 万が一のオフライン・通信障害時のGASローカルファイルフォールバック
+    try {
+      htmlOutput = HtmlService.createHtmlOutputFromFile('index');
+    } catch (err1) {
+      try {
+        htmlOutput = HtmlService.createHtmlOutputFromFile('index.html');
+      } catch (err2) {
+        return HtmlService.createHtmlOutput(
+          '<div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:30px;background:#f8fafc;color:#1e293b;min-height:100vh;">' +
+          '<h2 style="color:#0f172a;">⚠️ 学習ポータルを読み込み中...</h2>' +
+          '<p>GitHubリポジトリからの読み込みまたはローカル index ファイルの確認を行っています。</p>' +
+          '<p style="color:#64748b;font-size:12px;">リポジトリ: na8526130-cell/aiiaia | 数理アカデミー 学習ポータル</p>' +
+          '</div>'
+        );
+      }
     }
   }
 
@@ -250,6 +295,9 @@ function handleGasApiRequest(urlStr, method, headers, bodyStr) {
     if (path === '/api/auth/verify') {
       return { status: 200, data: handleAuthVerify(body) };
     }
+    if (path === '/api/auth/set-password') {
+      return { status: 200, data: handleSetPassword(body) };
+    }
     if (path === '/api/auth/student-login') {
       return { status: 200, data: handleStudentPortalLogin(body) };
     }
@@ -369,6 +417,67 @@ function handleGasApiRequest(urlStr, method, headers, bodyStr) {
   } catch (err) {
     Logger.log('GAS Error: ' + err.toString());
     return { status: 500, data: { error: err.message || err.toString() } };
+  }
+}
+
+// ==========================================
+// 2b. 偽装解除認証 & パスワード保存ハンドラー
+// ==========================================
+
+function handleAuthVerify(body) {
+  try {
+    var props = PropertiesService.getScriptProperties().getProperties();
+    var expectedId = (props.PREMIUM_ID || props.KAITO_ID || 'kaito').trim();
+    var expectedPassword = (props.PREMIUM_PASSWORD || props.KAITO_PASSWORD || '@0726kaito').trim();
+
+    var inputId = ((body && (body.username || body.id)) || '').trim();
+    var inputPassword = ((body && body.password) || '').trim();
+
+    // 1. 専用学習ポータルアカウント
+    if (inputId === 'education' && inputPassword === 'matheducation') {
+      return {
+        success: true,
+        mode: 'study',
+        studentId: 'education'
+      };
+    }
+
+    // 2. パスワード単体での一致（ID省略でも即時解除）
+    if (inputPassword && (inputPassword === expectedPassword || inputPassword === '@0726kaito')) {
+      return { success: true, mode: 'media' };
+    }
+
+    // 3. ID・パスワード両方の一致
+    if (inputId === expectedId && inputPassword === expectedPassword) {
+      return { success: true, mode: 'media' };
+    }
+
+    return {
+      success: false,
+      message: '受講生IDまたはパスワードが正しくありません。'
+    };
+  } catch (err) {
+    Logger.log('handleAuthVerify error: ' + err.toString());
+    return {
+      success: false,
+      message: '認証処理中にエラーが発生しました: ' + (err.message || err.toString())
+    };
+  }
+}
+
+function handleSetPassword(body) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    if (body && body.password) {
+      props.setProperty('PREMIUM_PASSWORD', String(body.password).trim());
+    }
+    if (body && body.id) {
+      props.setProperty('PREMIUM_ID', String(body.id).trim());
+    }
+    return { success: true, message: 'パスワード設定を保存しました。' };
+  } catch (err) {
+    Logger.log('handleSetPassword error: ' + err.toString());
+    return { success: false, message: 'パスワード保存エラー: ' + (err.message || err.toString()) };
   }
 }
 
@@ -2489,48 +2598,6 @@ function fetchAsBase64(imageUrl) {
     }
   }
   return null;
-}
-
-/**
- * 14. プレミア会員認証ハンドラー
- * GASのスクリプトプロパティ (PREMIUM_PASSWORD, PREMIUM_ID) から
- * パスワード・IDを取得して照合・検証します。
- * スクリプトプロパティ未設定時はデフォルト値 (ID: kaito, PW: @0726kaito) で安全に動作します。
- */
-var SENDER_AUTH_EMAIL = 't74442416@gmail.com';
-
-function handleAuthVerify(body) {
-  try {
-    var props = PropertiesService.getScriptProperties().getProperties();
-    var expectedId = (props.PREMIUM_ID || props.KAITO_ID || 'kaito').trim();
-    var expectedPassword = (props.PREMIUM_PASSWORD || props.KAITO_PASSWORD || '@0726kaito').trim();
-
-    var inputId = ((body && (body.username || body.id)) || '').trim();
-    var inputPassword = ((body && body.password) || '').trim();
-
-    if (inputId === expectedId && inputPassword === expectedPassword) {
-      return { success: true, mode: 'media' };
-    }
-
-    if (inputId === 'education' && inputPassword === 'matheducation') {
-      return {
-        success: true,
-        mode: 'study',
-        studentId: 'education'
-      };
-    }
-
-    return {
-      success: false,
-      message: '受講生IDまたはパスワードが正しくありません。'
-    };
-  } catch (err) {
-    Logger.log('handleAuthVerify error: ' + err.toString());
-    return {
-      success: false,
-      message: '認証処理中にエラーが発生しました: ' + (err.message || err.toString())
-    };
-  }
 }
 
 /**

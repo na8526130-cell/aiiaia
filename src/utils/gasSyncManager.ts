@@ -121,12 +121,32 @@ function doGet(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
-  // アプリケーション本体の配信 ('index' または 'index.html' 両対応)
-  var htmlOutput;
+  // アプリケーション本体の配信 (GitHub na8526130-cell/aiiaia 動的自動ローダー ＆ GASフォールバック)
+  var htmlContent = '';
+  var GITHUB_RAW_URL = 'https://raw.githubusercontent.com/na8526130-cell/aiiaia/main/gas/index.html';
   try {
-    htmlOutput = HtmlService.createHtmlOutputFromFile('index');
-  } catch (err1) {
-    htmlOutput = HtmlService.createHtmlOutputFromFile('index.html');
+    var ghRes = UrlFetchApp.fetch(GITHUB_RAW_URL + '?_t=' + Date.now(), {
+      method: 'get',
+      muteHttpExceptions: true,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KaitoGASLoader/3.0)' }
+    });
+    if (ghRes.getResponseCode() === 200) {
+      var fetchedText = ghRes.getContentText();
+      if (fetchedText && fetchedText.indexOf('</html>') !== -1) {
+        htmlContent = fetchedText;
+      }
+    }
+  } catch (ghErr) {}
+
+  var htmlOutput;
+  if (htmlContent) {
+    htmlOutput = HtmlService.createHtmlOutput(htmlContent);
+  } else {
+    try {
+      htmlOutput = HtmlService.createHtmlOutputFromFile('index');
+    } catch (err1) {
+      htmlOutput = HtmlService.createHtmlOutputFromFile('index.html');
+    }
   }
 
   htmlOutput.setTitle('数理アカデミー 学習ポータル')

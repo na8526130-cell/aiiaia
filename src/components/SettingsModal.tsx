@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, X, Globe, Check, RefreshCw, Server, Sparkles, Image as ImageIcon, Zap, Sun, Moon, Laptop, Cpu, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { Settings, X, Globe, Check, RefreshCw, Server, Sparkles, Image as ImageIcon, Zap, Sun, Moon, Laptop, Cpu, CheckCircle2, AlertCircle, Loader2, Lock, Key } from 'lucide-react';
 import { ApiSettings } from '../types';
 import { PRESET_INVIDIOUS_INSTANCES, PRESET_INNERTUBE_INSTANCES, DEFAULT_SETTINGS } from '../utils/apiClient';
 import {
@@ -9,6 +9,13 @@ import {
   setInvidiousThumbnailsEnabled
 } from '../utils/thumbnail';
 import { getThemePreference, setThemePreference, ThemeMode } from '../utils/themeManager';
+import {
+  getDisguiseAuthConfig,
+  saveDisguiseAuthConfig,
+  resetDisguiseAuth,
+  DEFAULT_AUTH_ID,
+  DEFAULT_AUTH_PASSWORD
+} from '../utils/authConfig';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -32,6 +39,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [themeMode, setLocalThemeMode] = useState<ThemeMode>(() => getThemePreference());
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [testResult, setTestResult] = useState<{ loading: boolean; success?: boolean; message?: string } | null>(null);
+
+  // Password & Disguise Settings State
+  const [authId, setAuthId] = useState<string>(() => getDisguiseAuthConfig().customId);
+  const [authPassword, setAuthPassword] = useState<string>(() => getDisguiseAuthConfig().customPassword);
+  const [requirePassword, setRequirePassword] = useState<boolean>(() => getDisguiseAuthConfig().requirePassword);
+  const [allowQuickUnlock, setAllowQuickUnlock] = useState<boolean>(() => getDisguiseAuthConfig().allowQuickUnlock);
 
   if (!isOpen) return null;
 
@@ -91,6 +104,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setBase64ThumbnailsEnabled(useBase64);
     setInvidiousThumbnailsEnabled(useInvidiousThumb);
     setThemePreference(themeMode);
+
+    // Save Disguise Password Settings
+    saveDisguiseAuthConfig({
+      customId: authId.trim() || DEFAULT_AUTH_ID,
+      customPassword: authPassword.trim() || DEFAULT_AUTH_PASSWORD,
+      requirePassword,
+      allowQuickUnlock
+    });
+
     setSavedSuccess(true);
     setTimeout(() => {
       setSavedSuccess(false);
@@ -106,6 +128,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setLocalThemeMode('system');
     setThemePreference('system');
     setTestResult(null);
+
+    // Reset password settings to default
+    const def = resetDisguiseAuth();
+    setAuthId(def.customId);
+    setAuthPassword(def.customPassword);
+    setRequirePassword(def.requirePassword);
+    setAllowQuickUnlock(def.allowQuickUnlock);
   };
 
   return (
@@ -167,6 +196,107 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </button>
               </div>
             )}
+          </div>
+
+          {/* Password & Gate Disguise Configuration */}
+          <div className="space-y-3 bg-neutral-950/50 p-4 rounded-xl border border-neutral-800">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-neutral-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5 text-blue-400" />
+                <span>偽装解除パスワード設定（動画画面のロック解除）</span>
+              </label>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                セキュリティ
+              </span>
+            </div>
+
+            <p className="text-xs text-neutral-400 leading-relaxed">
+              偽装画面（数理アカデミー）から動画画面に入るためのパスワードを自由に設定できます。
+            </p>
+
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="block text-xs font-medium text-neutral-300">
+                  解除パスワード (初期値: <code className="text-blue-400 font-mono">@0726kaito</code>)
+                </label>
+                <input
+                  type="text"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="@0726kaito"
+                  className="w-full px-3.5 py-2 bg-neutral-900 border border-neutral-700 rounded-lg text-xs font-mono text-white placeholder-neutral-500 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-medium text-neutral-300">
+                  受講生ID（アカウント名・省略可）
+                </label>
+                <input
+                  type="text"
+                  value={authId}
+                  onChange={(e) => setAuthId(e.target.value)}
+                  placeholder="kaito"
+                  className="w-full px-3.5 py-2 bg-neutral-900 border border-neutral-700 rounded-lg text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+                <p className="text-[11px] text-neutral-400">
+                  ※ パスワードが合っていれば、ログイン時にID入力を省略しても解除されます。
+                </p>
+              </div>
+
+              {/* Toggles */}
+              <div className="flex items-center justify-between p-3 bg-neutral-900 rounded-xl border border-neutral-800">
+                <div className="space-y-0.5 pr-3">
+                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                    パスワード保護を必須にする
+                  </div>
+                  <div className="text-[11px] text-neutral-400 leading-relaxed">
+                    OFFにすると、パスワード入力を省略してそのまま解除できます。
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={requirePassword}
+                  onClick={() => setRequirePassword(!requirePassword)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    requirePassword ? 'bg-blue-600' : 'bg-neutral-800'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                      requirePassword ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between p-3 bg-neutral-900 rounded-xl border border-neutral-800">
+                <div className="space-y-0.5 pr-3">
+                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                    「ワンクリック解除」ボタンを表示
+                  </div>
+                  <div className="text-[11px] text-neutral-400 leading-relaxed">
+                    ログイン画面に1タップで即座に解除できるボタンを常時表示します。
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={allowQuickUnlock}
+                  onClick={() => setAllowQuickUnlock(!allowQuickUnlock)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    allowQuickUnlock ? 'bg-emerald-600' : 'bg-neutral-800'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                      allowQuickUnlock ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* Invidious Instance Config */}

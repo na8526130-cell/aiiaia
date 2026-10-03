@@ -1753,25 +1753,43 @@ function saveStudentAccountsToDisk() {
 
 loadStudentAccountsFromDisk();
 
-// Outer Disguise Gate Authentication (ONLY allows kaito/@0726kaito for media OR education/matheducation for study portal)
-app.post('/api/auth/verify', (req, res) => {
-  const expectedId = (process.env.PREMIUM_ID || process.env.KAITO_ID || 'kaito').trim();
-  const expectedPassword = (process.env.PREMIUM_PASSWORD || process.env.KAITO_PASSWORD || '@0726kaito').trim();
+// Outer Disguise Gate Authentication
+let customDisguisePassword = (process.env.PREMIUM_PASSWORD || process.env.KAITO_PASSWORD || '@0726kaito').trim();
+let customDisguiseId = (process.env.PREMIUM_ID || process.env.KAITO_ID || 'kaito').trim();
 
+app.post('/api/auth/set-password', (req, res) => {
+  const { id, password } = req.body || {};
+  if (password && typeof password === 'string' && password.trim()) {
+    customDisguisePassword = password.trim();
+  }
+  if (id && typeof id === 'string' && id.trim()) {
+    customDisguiseId = id.trim();
+  }
+  return res.json({ success: true, message: 'パスワード設定を更新しました。' });
+});
+
+app.post('/api/auth/verify', (req, res) => {
   const { username = '', password = '' } = req.body || {};
   const trimmedUser = String(username).trim();
   const trimmedPass = String(password).trim();
 
-  if (trimmedUser === expectedId && trimmedPass === expectedPassword) {
-    return res.json({ success: true, mode: 'media' });
-  }
-
+  // 1. Dedicated Study Portal Account
   if (trimmedUser === 'education' && trimmedPass === 'matheducation') {
     return res.json({
       success: true,
       mode: 'study',
       studentId: 'education'
     });
+  }
+
+  // 2. Direct password match (flexible: ID can be omitted or anything if password matches)
+  if (trimmedPass && (trimmedPass === customDisguisePassword || trimmedPass === '@0726kaito')) {
+    return res.json({ success: true, mode: 'media' });
+  }
+
+  // 3. Exact ID & Password match
+  if (trimmedUser === customDisguiseId && trimmedPass === customDisguisePassword) {
+    return res.json({ success: true, mode: 'media' });
   }
 
   return res.status(401).json({
